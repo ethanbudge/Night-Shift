@@ -8,20 +8,20 @@ This branch has real, useful work on it, but it does not fully satisfy the issue
 - **DESIGN.md** — added a `## Roadmap: designed, not yet built` section with implementation-ready specs for: Linux (`systemd --user` timer) and native Windows (PowerShell + Task Scheduler) support; a `CONTROL.md`-based remote mode/model switch the owner can flip from GitHub's mobile app, including the exact fix for the security objection recorded against the old "not built" version of this idea; a secret-leak scanner design (what it scans, what it prints, where it plugs into the runner prompt); and a couple of concrete CLI/housekeeping fixes (hardcoded `/usr/bin/python3`, an `uninstall.sh`, `nightshift model`/`nightshift logs` subcommands).
 - **LICENSE** — added MIT. No license existed; picked MIT as a sensible default for a tool meant to be broadly reusable. Easy to swap if you want something else.
 
-## Blocker 1: the GitHub token can't post comments, set labels, or open PRs
+## Blocker 1: the GitHub token is read-only, full stop
 
-Every write I tried against `$GITHUB_REPO` (the hub repo, `ethanbudge/claude-tasks`) that touches issues or pull requests came back `403 Resource not accessible by personal access token`. The response headers are explicit about why:
+Every write I tried came back denied — not just issues/PRs, but `git push` itself:
 
-```
-x-accepted-github-permissions: issues=write; pull_requests=write
-```
+- `PUT .../issues/1/labels` and `POST .../issues/1/comments` on the hub repo (`ethanbudge/claude-tasks`) both returned `403 Resource not accessible by personal access token`, with the response header spelling out exactly what's missing: `x-accepted-github-permissions: issues=write; pull_requests=write`. The matching GETs succeeded, so the token has `issues=read`/`pull_requests=read` but not the write side of either.
+- `git push -u origin task/1-make-night-shift-public` against `ethanbudge/Night-Shift` failed too: `remote: Permission to ethanbudge/Night-Shift.git denied to ethanbudge` / `403`. Cloning and fetching both worked fine, so this isn't a repo-access-list problem — it's `Contents` also being read-only.
 
-...meaning the token currently has `issues=read` and `pull_requests=read` (both confirmed via a GET, which succeeded), but not the write side of either. `git push` itself should still work (the token's `Contents` scope looks intact based on collaborator permissions), but I could not:
-- label this issue `status:in-progress` / `status:in-review` / `status:needs-human`
-- post the claiming comment, a questions comment, or a summary comment
-- open the PR this task is supposed to end with
+So the token can currently read everything it's supposed to (issues, PRs, repo contents) and write none of it. I could not:
+- label this issue, post the claiming comment, a questions comment, or a summary comment
+- push this branch anywhere, or open the PR this task is supposed to end with
 
-**Fix:** GitHub Settings → Developer settings → Fine-grained tokens → the token Night Shift uses → Repository permissions → set **Issues** and **Pull requests** to **Read and write** (Contents and Metadata already look fine). This is exactly what `README.md`'s own setup instructions say to configure — the currently-installed token doesn't match them. This isn't specific to this task; *no* task can reach any of its four end states without this, since all of them require an issue comment and most require a label change or a PR.
+The one commit I made (`815d2a5`, "Rewrite README as a public-facing doc, expand DESIGN roadmap, add LICENSE") exists only in the local clone at `workspaces/Night-Shift` on this machine — on branch `task/1-make-night-shift-public`, one commit ahead of `origin/main`. It never left the sandbox.
+
+**Fix:** GitHub Settings → Developer settings → Fine-grained tokens → the token Night Shift uses → Repository permissions → set **Contents**, **Issues**, and **Pull requests** all to **Read and write** (Metadata read-only is correct as-is). This matches what `README.md`'s own setup instructions already say to configure — the currently-installed token doesn't match them. This isn't specific to this task: *no* task, on any repo, can reach any of its four end states without this, since all four require an issue write and most require a push and/or a PR.
 
 ## Blocker 2: the agent can't edit the files this task asks it to change
 
