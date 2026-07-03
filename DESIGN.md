@@ -10,6 +10,7 @@
     │
     ├─► check_budget.py --mode start     ── the three gates (below). Fail closed.
     │        │
+    │        ├─ reads ~/claude-night-shift/mode  (day-off / vacation override)
     │        └─ reads OAuth token (Keychain) ─► GET api.anthropic.com/api/oauth/usage
     │
     ├─► git reset repo clone to origin/main   (clean slate each run)
@@ -39,6 +40,8 @@ status:ready ──► status:in-progress ──► status:in-review (PR opened)
 2. **Session-collision gate.** A 5-hour usage window opens at your first message and everything sent within it counts against one session cap. If `now + 5h` reaches past the next workday's 8AM start, a run now would leave you with a partially-consumed window at the start of your day — so the guard blocks new work from 3AM onward on weekday mornings. Corollary: a window opened *at* ~3AM resets at exactly 8AM, which is the "credits refresh right before my day starts" behavior you wanted. Weekends are unrestricted until 3AM Monday.
 
 3. **Weekly budget gate (dynamic).** See below.
+
+**Schedule overrides.** The owner can waive the schedule protection via a mode file at `~/claude-night-shift/mode` (managed by the `nightshift` helper, `ops/mode.sh`). `day-off` skips gates 1–2 (dateless = today only, auto-expiring at midnight so a forgotten toggle can't eat a workday's credits); `vacation` skips gates 1–2 **and** zeroes the workday reserve in gate 3. The weekly hard cap and 5-hour caps always apply, so even open-ended vacation mode can't burn the account to 100%. The file lives outside the sandbox, so the agent cannot loosen its own gates; anything unparseable or expired collapses to `normal`.
 
 ## The budget algorithm
 
@@ -83,10 +86,26 @@ This gives exactly the behavior you described: on Sunday night with the whole wo
 | Strict mode | `allowUnsandboxedCommands: false`, `failIfUnavailable: true` | No escape hatch: a command either runs sandboxed or not at all |
 | Permission rules | Deny `Edit`/`Write` on `.claude/`, `ops/`, `CLAUDE.md`, `RUNNER_PROMPT.md`; deny `Read` on key credential paths (defense-in-depth for Claude's own file tools, which sit outside the Bash sandbox) | The agent cannot rewrite its own rules or read secrets via the Read tool |
 | Sandbox denyWrite | Same governance paths denied at the OS layer too | Shell commands can't do what the file tools were denied |
-| GitHub | Fine-grained PAT scoped to the one repo; `main` branch protected (PRs required) | Worst-case blast radius on GitHub is one repo's branches/issues; instructions on `main` are immutable to the agent |
+| GitHub | Fine-grained PAT scoped to the hub repo + explicitly named project repos; default branches protected (PRs required) | Worst-case blast radius on GitHub is branches/issues of repos you deliberately enrolled; instructions on `main` are immutable to the agent |
 | Runner isolation | Guard scripts + settings live in `~/claude-night-shift/`, **outside** the sandbox's writable area; updates require you to re-run `install.sh` | The agent can never modify the guard that constrains it |
 | Headless permission behavior | In `-p` mode there is no human to prompt, so anything not pre-allowed is **auto-denied** and the agent must adapt | No "prompt fatigue" holes; denials are logged in the transcript |
 | Budget caps | The three gates + per-task `--max-turns` + wall-clock timeout + `MAX_TASKS_PER_RUN` | Bounded worst-case burn even if everything else misbehaves |
+
+## Multi-repo: hub and spokes
+
+Task issues live in one hub repo (`claude-tasks`); each issue may name a **target repository** where the work lands. The agent clones targets *inside* its existing sandbox, under a gitignored `workspaces/` folder in the hub clone:
+
+```
+tasks-repo/            ← agent working dir; sandbox unchanged (writes only inside ".")
+├── governance files   ← still write-denied (.claude/, ops/, .github/, *.md)
+└── workspaces/        ← gitignored; one persistent clone per project repo
+```
+
+Why inside rather than sibling folders: the OS sandbox's write boundary, the settings files, and the installer all stay exactly as they were — no new writable areas, no per-project configuration. `git clean -fd` in the runner's reset step skips both ignored paths and nested git repos, so workspace clones persist across runs without being re-downloaded. Issue numbers are hub-global, so `task/<n>-slug` branch names can't collide across projects, and a PR body of `Closes owner/claude-tasks#n` auto-closes the hub issue when the project PR merges. Enrollment of a new project is deliberate and singular: add the repo to the fine-grained PAT (and protect its default branch). A repo the PAT doesn't cover fails at clone time and becomes a handoff comment.
+
+## Notifications
+
+GitHub's native notifications do **not** work here: the agent authenticates with the owner's PAT, its comments are the owner's own activity, and GitHub never notifies you about yourself. Instead, a GitHub Action (`.github/workflows/notify.yml`) fires on exactly two label events — `status:needs-human` (questions) and `status:in-review` (PR ready) — and curls a push to a private [ntfy.sh](https://ntfy.sh) topic (stored as an Actions secret; the topic name is effectively the password, so make it long and random). The phone app subscribes to the topic; tapping the notification opens the issue. Everything else (creating tasks, replying, merging) happens in the GitHub mobile app or web. If you ever want hard separation of identities (and native GitHub notifications), a free machine-user account holding the PAT is the upgrade path.
 
 ## Known risks and honest limitations
 
@@ -95,7 +114,7 @@ This gives exactly the behavior you described: on Sunday night with the whole wo
 - **Network allowlisting is by hostname, not content.** The sandbox proxy doesn't inspect TLS, so a hostile payload could in principle abuse an allowed domain (the docs themselves flag `github.com` + domain-fronting). Mitigations: the agent only handles content from your own private repo, its readable surface is essentially just that repo, and the PAT limits GitHub writes to it. Residual risk is low but not zero — this is the main caveat to "foolproof."
 - **WebFetch can GET arbitrary URLs** (that's the "read-only internet" you wanted), and a GET's query string is technically an outbound channel. Same mitigation as above: there's nothing sensitive in the agent's readable world to leak. If you want maximum lockdown, add `WebFetch` deny rules or an allowlist of research domains in `runner-settings.json`.
 - **Pro plan realities:** overnight runs use your default model (Sonnet); Opus isn't part of Pro. Long tasks may span multiple nights via WIP branches — that's by design.
-- **Both you and the agent share one GitHub account** (comments distinguished by the agent's `🤖 Night Shift` header). If you'd rather have a hard separation, create a free machine-user account, add it as a collaborator on the repo, and issue the PAT from it.
+- **Both you and the agent share one GitHub account** (comments distinguished by the agent's `🤖 Night Shift` header). Besides the cosmetic ambiguity, this is why native GitHub notifications stay silent (own activity) — the ntfy workflow exists to fill that gap. If you'd rather have a hard separation, create a free machine-user account, add it as a collaborator on the repos, and issue the PAT from it.
 - **Timeouts leave tasks parked**, not lost: WIP is pushed to the task branch and resumed on a later run with fresh context.
 
 ## Why this shape (alternatives considered)
@@ -108,4 +127,4 @@ This gives exactly the behavior you described: on Sunday night with the whole wo
 
 - Auto-calibrate `PCT_PER_WORK_HOUR` from `usage-log.csv` history.
 - A nightly digest: the agent opens/updates a single "📋 Night Shift Report" issue summarizing what it did.
-- Push notifications on `status:needs-human` via a GitHub Action (GitHub already emails you, so this may be redundant).
+- A phone-flippable day-off/vacation toggle (e.g. a control issue on GitHub). Deliberately not built yet: the agent can write to the hub repo, so a GitHub-hosted switch would let it loosen its own gates unless the machine-account split happens first.

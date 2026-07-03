@@ -45,7 +45,44 @@ CFG = {
     "five_hour_max_start": fnum("FIVE_HOUR_MAX_START", 90),
     "five_hour_max_continue": fnum("FIVE_HOUR_MAX_CONTINUE", 95),
     "log_dir": os.environ.get("LOG_DIR", os.path.expanduser("~/claude-night-shift/logs")),
+    "mode_file": os.path.expanduser(os.environ.get("MODE_FILE", "~/claude-night-shift/mode")),
 }
+
+
+def read_override(now):
+    """Owner-set schedule override from the mode file (see ops/mode.sh).
+
+    File format, single line:  normal | day-off [YYYY-MM-DD] | vacation [YYYY-MM-DD]
+    The date is the LAST day the override applies (inclusive). day-off without a
+    date means today only. Anything missing, expired, or unparseable collapses to
+    'normal' -- an override can loosen gates only when explicitly and validly set.
+
+    Effects: day-off and vacation skip the working-hours and session-collision
+    gates; vacation additionally zeroes the workday reserve. The weekly hard cap
+    and 5-hour caps always apply.
+
+    Returns (override, human_note).
+    """
+    try:
+        with open(CFG["mode_file"]) as f:
+            parts = f.readline().strip().lower().split()
+    except OSError:
+        return "normal", ""
+    if not parts or parts[0] not in ("day-off", "vacation"):
+        return "normal", ""
+    override = parts[0]
+    end = None
+    if len(parts) > 1:
+        try:
+            end = dt.date.fromisoformat(parts[1])
+        except ValueError:
+            return "normal", ""  # a date was given but is garbage -- treat as unset
+    elif override == "day-off":
+        end = now.date()  # dateless day-off auto-expires at midnight
+    if end is not None and now.date() > end:
+        return "normal", ""
+    note = f"{override} mode" + (f" through {end.isoformat()}" if end else "")
+    return override, note
 
 
 def decide(mode, go, reason, **extra):
@@ -153,16 +190,19 @@ def main():
         return fail(mode, 2, f"unknown mode {mode!r}")
 
     now = dt.datetime.now().astimezone()
+    override, override_note = read_override(now)
 
-    # Gate 1: never run during working hours.
-    if in_work_hours(now):
-        return decide(mode, False, "inside working hours")
+    # Gates 1 & 2 protect the workday; a day-off/vacation override waives them.
+    if override == "normal":
+        # Gate 1: never run during working hours.
+        if in_work_hours(now):
+            return decide(mode, False, "inside working hours")
 
-    # Gate 2: a 5-hour window opened now must not still be open at workday start.
-    nws = next_work_start(now)
-    if nws is not None and now + dt.timedelta(hours=SESSION_HOURS) > nws:
-        return decide(mode, False,
-                      f"a session window opened now would overlap the workday starting {nws.isoformat(timespec='minutes')}")
+        # Gate 2: a 5-hour window opened now must not still be open at workday start.
+        nws = next_work_start(now)
+        if nws is not None and now + dt.timedelta(hours=SESSION_HOURS) > nws:
+            return decide(mode, False,
+                          f"a session window opened now would overlap the workday starting {nws.isoformat(timespec='minutes')}")
 
     # Gate 3: dynamic weekly budget, from real server-side usage. Fail closed.
     token = get_token()
@@ -195,11 +235,15 @@ def main():
 
     whr = work_hours_until(now, reset_at)
     reserve = whr * CFG["pct_per_work_hour"] * CFG["safety_factor"]
+    if override == "vacation":
+        reserve = 0.0  # no workdays coming: nothing to reserve for
     surplus = (100.0 - weekly_pct) - reserve
     metrics = {"five_hour_pct": five_pct, "weekly_pct": weekly_pct,
                "weekly_resets_at": reset_at.isoformat(timespec="minutes"),
                "work_hours_remaining": whr,
                "reserve": round(reserve, 1), "surplus": round(surplus, 1)}
+    if override != "normal":
+        metrics["override"] = override_note
 
     if weekly_pct >= CFG["weekly_hard_cap"]:
         return decide(mode, False, f"weekly utilization {weekly_pct}% >= hard cap", **metrics)

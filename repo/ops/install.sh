@@ -20,9 +20,14 @@ fi
 echo "==> Installing to $DEST"
 mkdir -p "$DEST/logs" "$DEST/secrets"
 chmod 700 "$DEST/secrets"
-for f in night-shift.sh check_budget.py runner-settings.json; do
+for f in night-shift.sh check_budget.py runner-settings.json mode.sh; do
     cp "$SRC/$f" "$DEST/$f"
 done
+chmod +x "$DEST/mode.sh"
+# Convenience command: `nightshift status|normal|day-off|vacation`
+if [ -d "$HOME/.local/bin" ]; then
+    ln -sf "$DEST/mode.sh" "$HOME/.local/bin/nightshift"
+fi
 # Never clobber an existing, user-edited config.
 if [ ! -f "$DEST/config.env" ]; then
     cp "$SRC/config.env" "$DEST/config.env"

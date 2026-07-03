@@ -1,0 +1,48 @@
+# Push notification to your phone (via ntfy.sh) when Night Shift needs input or
+# finishes a task. Fires on exactly two label events -- nothing else, no inbox spam.
+#
+# One-time setup:
+#   1. Pick a long, private topic name (it acts as a password), e.g.
+#      `nightshift-<random string>`.
+#   2. Repo Settings -> Secrets and variables -> Actions -> new secret
+#      NTFY_TOPIC with that name.
+#   3. Install the ntfy app on your phone and subscribe to the same topic.
+name: Notify phone
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  push:
+    if: github.event.label.name == 'status:needs-human' || github.event.label.name == 'status:in-review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send ntfy push
+        env:
+          TOPIC: ${{ secrets.NTFY_TOPIC }}
+          LABEL: ${{ github.event.label.name }}
+          TITLE: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          NUM: ${{ github.event.issue.number }}
+        run: |
+          if [ -z "$TOPIC" ]; then
+            echo "NTFY_TOPIC secret not set; skipping"
+            exit 0
+          fi
+          if [ "$LABEL" = "status:needs-human" ]; then
+            HEADER="Night Shift needs your input"
+            TAGS="question"
+            PRIO="high"
+          else
+            HEADER="Night Shift finished a task (PR ready)"
+            TAGS="white_check_mark"
+            PRIO="default"
+          fi
+          curl -sS \
+            -H "Title: $HEADER" \
+            -H "Priority: $PRIO" \
+            -H "Tags: $TAGS" \
+            -H "Click: $URL" \
+            -d "#$NUM: $TITLE" \
+            "https://ntfy.sh/$TOPIC"

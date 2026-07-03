@@ -23,6 +23,8 @@
       "Write(./.claude/**)",
       "Edit(./ops/**)",
       "Write(./ops/**)",
+      "Edit(./.github/**)",
+      "Write(./.github/**)",
       "Edit(./CLAUDE.md)",
       "Write(./CLAUDE.md)",
       "Edit(./RUNNER_PROMPT.md)",

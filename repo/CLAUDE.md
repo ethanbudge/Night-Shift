@@ -1,6 +1,36 @@
 # Tasks repo — agent reference
 
-This repo is the task queue for the Night Shift agent. Tasks are GitHub Issues; work products are `task/*` branches and PRs. The per-run instructions are in RUNNER_PROMPT.md; this file is the reference for conventions and API calls.
+This repo is the task queue for the Night Shift agent. Tasks are GitHub Issues **in this repo**; work products are `task/*` branches and PRs — in this repo for standalone tasks, or in a separate project repo when the issue names one. The per-run instructions are in RUNNER_PROMPT.md; this file is the reference for conventions and API calls.
+
+## Target repositories and workspaces
+
+Each task issue may have a `## Target repository` section naming an `owner/repo` slug. That is where the work lands. If the section is blank, missing, or says `claude-tasks`, the task is standalone and lands in this repo (under `projects/<issue#>-<slug>/`).
+
+Project repos are cloned inside this clone, under the gitignored `workspaces/` folder — one subfolder per repo name. The clone persists between runs. At the start of a task targeting `owner/name`:
+
+```bash
+mkdir -p workspaces
+if [ ! -d "workspaces/name/.git" ]; then
+  git clone "https://x-access-token:${GH_TOKEN}@github.com/owner/name.git" "workspaces/name"
+fi
+cd workspaces/name
+git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/owner/name.git"
+git fetch origin
+# fresh task: branch from the remote default branch (check it -- not always main)
+git checkout -B "task/<issue#>-<slug>" "origin/$(git remote show origin | sed -n 's/.*HEAD branch: //p')"
+# resuming: git checkout "task/<issue#>-<slug>" && git merge --ff-only "origin/task/<issue#>-<slug>"
+```
+
+Rules that follow from this layout:
+
+- **Issues, labels, and comments always live in this repo** (`$GITHUB_REPO`), no matter where the code goes. The curl commands below always target `$GITHUB_REPO` for issue operations.
+- **Branches and PRs go to the target repo.** When opening a PR on a project repo, substitute its slug in the pulls URL and use `"body":"Closes $GITHUB_REPO#<issue#>\n\n..."` — the cross-repo `Closes` reference auto-closes the task issue here when the PR merges.
+- The same branch/commit rules apply in project repos: never commit to the default branch, never force-push, never rewrite pushed history, never touch `.git/hooks` or `.git/config`.
+- If a clone fails with 403/404, the PAT doesn't cover that repo — that is end state C (handoff): tell the owner exactly which repo to add to the token.
+
+## Dependencies between tasks
+
+If an issue body or comment thread contains `Depends on #N` (case-insensitive) and issue N is still open, the task is not actionable — skip it during selection. Multiple `Depends on` lines all must be satisfied.
 
 ## Labels
 
@@ -48,18 +78,24 @@ curl -sS -X PUT -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd
   "https://api.github.com/repos/$GITHUB_REPO/issues/$N/labels" \
   -d '{"labels":["status:in-progress","priority:high"]}'
 
-# Open a PR:
+# Open a PR (standalone task -- PR lives here alongside the issue):
 curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/$GITHUB_REPO/pulls" \
   -d '{"title":"Task #N: <title>","head":"task/N-slug","base":"main","body":"Closes #N\n\n<summary + verification steps>"}'
+
+# Open a PR on a project repo (replace owner/name and base with its default branch;
+# note the full-slug Closes reference back to the task issue in this repo):
+curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/owner/name/pulls" \
+  -d '{"title":"Task #N: <title>","head":"task/N-slug","base":"main","body":"Closes OWNER/claude-tasks#N\n\n<summary + verification steps>"}'
 ```
 
 ## Branches and commits
 
-- One branch per task: `task/<issue-number>-<short-slug>` (e.g. `task/12-csv-importer`).
+- One branch per task: `task/<issue-number>-<short-slug>` (e.g. `task/12-csv-importer`), created in the target repo. Issue numbers are unique across all your projects because they all come from this repo, so branch names can't collide.
 - Push early and often; pushed WIP is the crash-recovery mechanism.
-- Never commit to `main`, never force-push, never rewrite pushed history.
-- Task deliverables live in a folder named after the task when they're standalone (e.g. `projects/12-csv-importer/`), or follow the issue's stated layout.
+- Never commit to `main` (or the target repo's default branch), never force-push, never rewrite pushed history.
+- Standalone task deliverables live in a folder named after the task (e.g. `projects/12-csv-importer/`) in this repo; work targeting a project repo follows that repo's existing layout.
 
 ## Question etiquette (end state B)
 

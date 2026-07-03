@@ -5,9 +5,18 @@ title: ""
 labels: ["status:ready", "priority:medium"]
 ---
 
+## Target repository
+
+<!-- owner/repo the work should land in, e.g. ethanbudge/my-website.
+     Leave blank (or write claude-tasks) for standalone work inside this repo.
+     The repo must be covered by the agent's PAT -- see ops docs -->
+
 ## Goal
 
 <!-- What you want, in plain language. The agent works ONLY from this issue -->
+
+<!-- Sequencing: add a line "Depends on #N" anywhere in this issue and the
+     agent will skip it until issue N is closed -->
 
 ## Definition of done
 
