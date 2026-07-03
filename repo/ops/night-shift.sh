@@ -9,7 +9,7 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 source "$BASE/config.env"
 export WORK_START_HOUR WORK_END_HOUR WORKDAYS PCT_PER_WORK_HOUR SAFETY_FACTOR \
        MIN_SURPLUS_START MIN_SURPLUS_CONTINUE WEEKLY_HARD_CAP \
-       FIVE_HOUR_MAX_START FIVE_HOUR_MAX_CONTINUE LOG_DIR MODE_FILE
+       FIVE_HOUR_MAX_START FIVE_HOUR_MAX_CONTINUE LOG_DIR MODE_FILE MODEL
 
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/night-shift.log"
@@ -76,12 +76,15 @@ while [ "$tasks" -lt "$MAX_TASKS_PER_RUN" ]; do
     log "task invocation $((tasks + 1)) -> $RUN_LOG"
 
     # macOS has no timeout(1); perl's alarm gives us a hard wall-clock cap.
+    model_args=()
+    [ -n "${MODEL:-}" ] && model_args=(--model "$MODEL")
     perl -e 'alarm shift; exec @ARGV' "$((TASK_TIMEOUT_MIN * 60))" \
         "$CLAUDE_BIN" -p "$(cat "$REPO_DIR/RUNNER_PROMPT.md")" \
         --settings "$BASE/runner-settings.json" \
         --permission-mode acceptEdits \
         --max-turns "$MAX_TURNS_PER_TASK" \
         --output-format json \
+        "${model_args[@]}" \
         > "$RUN_LOG" 2>>"$LOG"
     rc=$?
     tasks=$((tasks + 1))
