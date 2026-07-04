@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Claude Night Shift hourly at :07 (mirrors the macOS launchd interval)
+
+[Timer]
+OnCalendar=*-*-* *:07:00
+Persistent=false
+Unit=nightshift.service
+
+[Install]
+WantedBy=timers.target
