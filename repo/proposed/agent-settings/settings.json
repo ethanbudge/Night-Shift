@@ -1,0 +1,10 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "denyRead": ["~/"],
+      "allowRead": ["."],
+      "denyWrite": ["./.claude", "./ops", "./.github", "./CLAUDE.md", "./RUNNER_PROMPT.md", "./CONTROL.md", "./.git/hooks", "./.git/config"]
+    }
+  }
+}
