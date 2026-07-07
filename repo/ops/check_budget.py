@@ -9,13 +9,16 @@ Exit codes:
 
 Prints a single-line JSON decision to stdout and appends a row to usage-log.csv.
 Configuration comes from environment variables (sourced from config.env by the
-wrapper); every knob has a safe default. Stdlib only; runs on macOS system python3.
+wrapper); every knob has a safe default. Stdlib only; runs on macOS, Linux, and
+Windows system python3.
 """
 
 import csv
 import datetime as dt
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
 import urllib.error
@@ -24,6 +27,7 @@ import urllib.request
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 SESSION_HOURS = 5
+RESTRICTIVENESS = {"vacation": 0, "day-off": 1, "normal": 2}
 
 
 def fnum(name, default):
@@ -46,6 +50,8 @@ CFG = {
     "five_hour_max_continue": fnum("FIVE_HOUR_MAX_CONTINUE", 95),
     "log_dir": os.environ.get("LOG_DIR", os.path.expanduser("~/claude-night-shift/logs")),
     "mode_file": os.path.expanduser(os.environ.get("MODE_FILE", "~/claude-night-shift/mode")),
+    "github_repo": os.environ.get("GITHUB_REPO", ""),
+    "secrets_dir": os.path.expanduser(os.environ.get("SECRETS_DIR", "~/claude-night-shift/secrets")),
 }
 
 
@@ -85,6 +91,62 @@ def read_override(now):
     return override, note
 
 
+def read_remote_control():
+    """Owner-set override from CONTROL.md in the hub repo (see CONTROL.md).
+
+    This is a convenience layer on top of the local mode file, fetched over
+    the network with the same PAT the wrapper already has on disk -- and
+    unlike the Anthropic usage check below, it is NOT safety-critical: any
+    error (missing config, network hiccup, bad token, unparseable content)
+    returns (None, None) so the caller falls back to the local mode file
+    alone. It never fails open to "run anyway" -- only to "ignore me."
+
+    Returns (remote_mode_or_None, remote_model_or_None).
+    """
+    repo = CFG["github_repo"]
+    if not repo:
+        return None, None
+    try:
+        with open(os.path.join(CFG["secrets_dir"], "github-token")) as f:
+            token = f.read().strip()
+    except OSError:
+        return None, None
+    if not token:
+        return None, None
+
+    url = f"https://api.github.com/repos/{repo}/contents/CONTROL.md"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.raw",
+        "User-Agent": "night-shift-guard",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            text = r.read().decode("utf-8", errors="ignore")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None, None
+
+    # [ \t] rather than \s so the match can't cross a newline (\s includes
+    # \n, which let a blank `model:` value greedily swallow the next line --
+    # e.g. a following markdown code-fence line -- as its "value").
+    mode_m = re.search(r"(?im)^[ \t]*mode[ \t]*:[ \t]*(\S+)", text)
+    model_m = re.search(r"(?im)^[ \t]*model[ \t]*:[ \t]*(\S*)[ \t]*$", text)
+    remote_mode = mode_m.group(1).strip().lower() if mode_m else None
+    if remote_mode not in RESTRICTIVENESS:
+        remote_mode = None
+    remote_model = model_m.group(1).strip() if model_m and model_m.group(1).strip() else None
+    return remote_mode, remote_model
+
+
+def combine_overrides(local, remote):
+    """The more restrictive (safer) of the local and remote override wins."""
+    if remote is None:
+        return local, False
+    if RESTRICTIVENESS[remote] > RESTRICTIVENESS[local]:
+        return remote, True
+    return local, False
+
+
 def decide(mode, go, reason, **extra):
     payload = {"go": go, "mode": mode, "reason": reason, **extra}
     print(json.dumps(payload))
@@ -120,18 +182,21 @@ def log_row(mode, go, reason, extra):
 
 
 def get_token():
-    """OAuth access token: macOS Keychain first, credentials file as fallback."""
-    try:
-        out = subprocess.run(
-            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if out.returncode == 0:
-            tok = json.loads(out.stdout).get("claudeAiOauth", {}).get("accessToken")
-            if tok:
-                return tok
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    """OAuth access token: macOS Keychain first (Darwin only), credentials
+    file as fallback everywhere (this is also the only path on Linux/Windows,
+    which have no Keychain equivalent)."""
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.run(
+                ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if out.returncode == 0:
+                tok = json.loads(out.stdout).get("claudeAiOauth", {}).get("accessToken")
+                if tok:
+                    return tok
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
     try:
         with open(os.path.expanduser("~/.claude/.credentials.json")) as f:
             return json.load(f).get("claudeAiOauth", {}).get("accessToken")
@@ -190,7 +255,13 @@ def main():
         return fail(mode, 2, f"unknown mode {mode!r}")
 
     now = dt.datetime.now().astimezone()
-    override, override_note = read_override(now)
+    local_override, local_note = read_override(now)
+    remote_mode, remote_model = read_remote_control()
+    override, remote_won = combine_overrides(local_override, remote_mode)
+    if remote_won:
+        override_note = f"{override} mode (from CONTROL.md, overriding local '{local_override}')"
+    else:
+        override_note = local_note
 
     # Gates 1 & 2 protect the workday; a day-off/vacation override waives them.
     if override == "normal":
@@ -244,6 +315,8 @@ def main():
                "reserve": round(reserve, 1), "surplus": round(surplus, 1)}
     if override != "normal":
         metrics["override"] = override_note
+    if remote_model:
+        metrics["model_override"] = remote_model
 
     if weekly_pct >= CFG["weekly_hard_cap"]:
         return decide(mode, False, f"weekly utilization {weekly_pct}% >= hard cap", **metrics)
