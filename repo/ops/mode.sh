@@ -59,11 +59,19 @@ case "$cmd" in
         echo "mode: normal (workday gates + weekly reserve active)"
         ;;
     day-off|vacation)
-        line="$cmd"
         if [ -n "${2:-}" ]; then
             valid_date "$2" || { echo "ERROR: '$2' is not a valid YYYY-MM-DD date"; exit 1; }
-            line="$cmd $2"
+            end="$2"
+        elif [ "$cmd" = "day-off" ]; then
+            # No date given: expire at the end of today. Write today's actual
+            # date into the file now -- check_budget.py just compares against
+            # it, so the override correctly stops matching after midnight
+            # instead of silently re-deriving "today" on every future read.
+            end="$(date "+%Y-%m-%d")"
+        else
+            end=""
         fi
+        line="$cmd${end:+ $end}"
         mkdir -p "$(dirname "$MODE_FILE")"
         printf '%s\n' "$line" > "$MODE_FILE"
         if [ "$cmd" = "day-off" ] && [ -z "${2:-}" ]; then

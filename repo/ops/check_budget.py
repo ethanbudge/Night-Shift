@@ -59,9 +59,11 @@ def read_override(now):
     """Owner-set schedule override from the mode file (see ops/mode.sh).
 
     File format, single line:  normal | day-off [YYYY-MM-DD] | vacation [YYYY-MM-DD]
-    The date is the LAST day the override applies (inclusive). day-off without a
-    date means today only. Anything missing, expired, or unparseable collapses to
-    'normal' -- an override can loosen gates only when explicitly and validly set.
+    The date is the LAST day the override applies (inclusive). mode.sh always
+    writes an explicit date for dateless `day-off` (today's date, at set time) so
+    that expiry is fixed to when the mode was set, not re-derived on every read.
+    Anything missing, expired, or unparseable collapses to 'normal' -- an override
+    can loosen gates only when explicitly and validly set.
 
     Effects: day-off and vacation skip the working-hours and session-collision
     gates; vacation additionally zeroes the workday reserve. The weekly hard cap
@@ -77,15 +79,17 @@ def read_override(now):
     if not parts or parts[0] not in ("day-off", "vacation"):
         return "normal", ""
     override = parts[0]
-    end = None
     if len(parts) > 1:
         try:
             end = dt.date.fromisoformat(parts[1])
         except ValueError:
             return "normal", ""  # a date was given but is garbage -- treat as unset
-    elif override == "day-off":
-        end = now.date()  # dateless day-off auto-expires at midnight
-    if end is not None and now.date() > end:
+    else:
+        # No date in the file at all: a pre-fix mode file, or hand-written.
+        # We don't know when it was set, so we can't tell if it's expired --
+        # collapse to unset rather than let it apply forever.
+        return "normal", ""
+    if now.date() > end:
         return "normal", ""
     note = f"{override} mode" + (f" through {end.isoformat()}" if end else "")
     return override, note
