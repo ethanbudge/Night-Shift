@@ -18,10 +18,11 @@ If none of the three exist, print exactly `NO_ACTIONABLE_TASKS` and exit. Do not
 ## Work the task
 
 1. **Claim it:** set labels to `status:in-progress` (keep priority labels), and post a comment (with the standard agent header) saying you're starting and what your plan is, in 2–4 sentences.
-2. **Locate the work:** if the issue has a `## Target repository` naming an `owner/repo`, the code lives there — clone/fetch it into `workspaces/<name>` per CLAUDE.md and work inside that clone. Otherwise the task is standalone and lives in this repo. Issue comments and labels ALWAYS go to the tasks repo either way.
-3. **Branch:** create or check out `task/<issue-number>-<short-slug>` in the target repo. Never commit to `main` (or the target's default branch); never force-push.
-4. **Execute:** work strictly from the issue text and thread. Commit in coherent increments with clear messages. Push the branch early and after every significant increment — pushed WIP is how a future run resumes if you're cut off.
-5. **Verify before declaring done:** run the code, tests, or checks that the definition of done implies. Unverified work is not done.
+2. **Scan for leaked secrets.** After cloning/fetching the target repo (or before touching this repo's own tree for a standalone task), run `python3 ops/secret_scan.py <path>` against the working tree. A nonzero exit means real or plausible credentials are sitting in the repo, accidentally committed. Do not read the flagged lines' contents further and do not make any other edits to that repo/task: post one comment naming the file and pattern (never the matched value), recommend the owner rotate/remove it, set `status:needs-human`, and stop — this is a hard stop, not a judgment call.
+3. **Locate the work:** if the issue has a `## Target repository` naming an `owner/repo`, the code lives there — clone/fetch it into `workspaces/<name>` per CLAUDE.md and work inside that clone. Otherwise the task is standalone and lives in this repo. Issue comments and labels ALWAYS go to the tasks repo either way.
+4. **Branch:** create or check out `task/<issue-number>-<short-slug>` in the target repo. Never commit to `main` (or the target's default branch); never force-push.
+5. **Execute:** work strictly from the issue text and thread. Commit in coherent increments with clear messages. Push the branch early and after every significant increment — pushed WIP is how a future run resumes if you're cut off.
+6. **Verify before declaring done:** run the code, tests, or checks that the definition of done implies. Unverified work is not done.
 
 ## End states (reach exactly one, then exit)
 
@@ -36,7 +37,7 @@ If none of the three exist, print exactly `NO_ACTIONABLE_TASKS` and exit. Do not
 ## Hard rules
 
 - One task per run. After reaching an end state, print `TASK_COMPLETE <issue-number> <end-state-letter>` and exit — never pick up a second task.
-- Never modify `.claude/`, `ops/`, `.github/`, `CLAUDE.md`, `RUNNER_PROMPT.md`, or git config/hooks (in this repo or any workspace clone). These are governance files; changes to them are denied by policy and must not be attempted by any route.
+- Never modify `.claude/`, `ops/`, `.github/`, `CLAUDE.md`, `RUNNER_PROMPT.md`, `CONTROL.md`, or git config/hooks (in this repo or any workspace clone). These are governance files; changes to them are denied by policy and must not be attempted by any route.
 - Every comment you post starts with the header line `🤖 **Night Shift** — <ISO timestamp>`. This is how your comments are told apart from the owner's.
 - If a tool call or network access is denied, adapt within policy; if the task truly requires it, that's end state C — document the needed access in the handoff.
 - If you see a usage-limit or rate-limit error from the platform, push whatever is committed and exit immediately.

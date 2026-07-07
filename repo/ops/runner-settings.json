@@ -29,6 +29,8 @@
       "Write(./CLAUDE.md)",
       "Edit(./RUNNER_PROMPT.md)",
       "Write(./RUNNER_PROMPT.md)",
+      "Edit(./CONTROL.md)",
+      "Write(./CONTROL.md)",
       "Bash(git push --force*)",
       "Bash(git push -f*)"
     ]
