@@ -5,6 +5,7 @@
 # symlinked as `nightshift` if ~/.local/bin exists).
 #
 #   nightshift status                  show the current mode + live gate decision
+#   nightshift begin-run               start one run now, as if the hourly timer just fired
 #   nightshift normal                  default: full workday protection
 #   nightshift day-off [YYYY-MM-DD]    skip workday gates; no date = today only
 #   nightshift vacation [YYYY-MM-DD]   also drop the weekly reserve; no date = until changed
@@ -26,7 +27,7 @@ LOG_DIR="${LOG_DIR:-$HOME/claude-night-shift/logs}"
 # supported platform actually guarantees.
 PYTHON3="$(command -v python3 || true)"
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 valid_date() {
     [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
@@ -53,6 +54,59 @@ case "$cmd" in
         else
             echo "  (skipped: python3 not found on PATH)"
         fi
+        ;;
+    begin-run)
+        # Fire one run right now, exactly as the hourly launchd/systemd timer
+        # would -- without waiting for the top of the hour. Every gate still
+        # applies (working hours, day-off/vacation, budget, the hard caps): this
+        # changes only WHEN a run may start, never WHETHER one is allowed. The
+        # scheduled timer is left alone, so normal hourly runs resume after this.
+        RUNNER="$BASE/night-shift.sh"
+        [ -x "$RUNNER" ] || { echo "ERROR: $RUNNER not found or not executable (run ops/install.sh)"; exit 1; }
+        [ -n "$PYTHON3" ] || { echo "ERROR: python3 not found on PATH"; exit 1; }
+
+        # 1) Refuse if a run is already in flight. night-shift.sh holds this same
+        #    lock the whole time it works, so reusing it means begin-run and the
+        #    hourly timer can never overlap into a double run.
+        LOCKDIR="$BASE/.lock"
+        if [ -d "$LOCKDIR" ]; then
+            running_pid="$(cat "$LOCKDIR/pid" 2>/dev/null || true)"
+            if [ -n "$running_pid" ] && kill -0 "$running_pid" 2>/dev/null; then
+                echo "nightshift is already running (pid $running_pid) -- begin-run refused."
+                echo "watch it with: nightshift logs -f"
+                exit 1
+            fi
+        fi
+
+        # 2) Refuse if the gates say no this instant -- the same decision the run
+        #    itself makes a beat later, surfaced now as a clear message instead
+        #    of a silent no-op. Retry once through a token refresh, like the
+        #    runner does, so an expired CLI token can't masquerade as a no-go.
+        rc=0
+        decision="$(MODE_FILE="$MODE_FILE" "$PYTHON3" "$BASE/check_budget.py" --mode start)" || rc=$?
+        if [ "$rc" -eq 3 ] && [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
+            echo "(OAuth token stale; refreshing with a minimal claude call...)"
+            "$CLAUDE_BIN" -p "Reply with exactly: ok" \
+                --model claude-haiku-4-5-20251001 >/dev/null 2>&1 || true
+            rc=0
+            decision="$(MODE_FILE="$MODE_FILE" "$PYTHON3" "$BASE/check_budget.py" --mode start)" || rc=$?
+        fi
+        if [ "$rc" -ne 0 ]; then
+            echo "begin-run refused -- the gates say no right now:"
+            echo "  ${decision:-(no output; check_budget.py exited $rc)}"
+            echo "tip: 'nightshift day-off' lifts the working-hours gate for today."
+            exit 1
+        fi
+
+        # 3) Clear to go: launch the runner detached, the same way the timer
+        #    invokes it, so it keeps working even if this shell closes. It
+        #    re-checks the gate and takes the lock itself -- the checks above are
+        #    just fast, friendly pre-flight.
+        mkdir -p "$LOG_DIR"
+        nohup "$RUNNER" >>"$LOG_DIR/launchd.log" 2>&1 &
+        echo "nightshift begin-run: started an immediate run (pid $!)."
+        echo "the hourly schedule is unchanged; normal runs continue after this one."
+        echo "watch it with: nightshift logs -f"
         ;;
     normal)
         rm -f "$MODE_FILE"
