@@ -24,6 +24,8 @@
           └─► stop on: budget says no / queue empty / usage-limit error / timeout
 ```
 
+`nightshift begin-run` is a second, manual entry point into the exact same `night-shift.sh`: it runs the identical gates and grabs the same single-instance lock the hourly timer uses, then hands off to the normal run. So an on-demand start and a scheduled start can never overlap, and neither can bypass the budget — `begin-run` is purely a "start now instead of waiting for `:07`" button (typically paired with `nightshift day-off`), never a way around a gate. The `mode.sh` wrapper does a fast pre-flight of the same lock and gate first, purely so it can refuse with a readable reason instead of a silent no-op; `night-shift.sh` re-checks both authoritatively.
+
 Task state lives entirely in GitHub Issues:
 
 ```

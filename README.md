@@ -122,6 +122,7 @@ Run this at an off-hours moment (evening or weekend) for a real dry run of the w
 
 ```bash
 nightshift status                  # current mode, and what the guard would decide right now
+nightshift begin-run               # start one run now, as if the hourly timer just fired (see below)
 nightshift day-off                 # run anytime today; reverts automatically at midnight
 nightshift day-off 2026-07-04      # ...or through a specific date, inclusive
 nightshift vacation 2026-07-20     # also stop reserving weekly budget, through a date
@@ -130,6 +131,15 @@ nightshift normal                  # back to the default protected schedule
 ```
 
 `day-off` skips the working-hours gate for the day. `vacation` additionally stops reserving weekly budget for workdays that aren't coming. Both still respect the hard weekly cap and 5-hour session limits, so nothing you do here can lock you out of your own account. The mode file lives outside the sandbox — the agent has no path to flip its own switch.
+
+**Start a run right now:** `nightshift begin-run` fires a single run immediately, exactly as the hourly timer would — handy right after `nightshift day-off`, when you want the agent to start *now* instead of waiting for the top of the hour.
+
+```bash
+nightshift day-off      # lift the working-hours gate for today
+nightshift begin-run    # ...and kick off the first run immediately
+```
+
+It runs through the very same gates (working hours, budget, the hard caps) and refuses — with the reason printed — if they say no, or if a run is already in progress. It never loosens a limit; it only changes *when* a run may start, never *whether* one is allowed. The scheduled hourly timer is left untouched, so normal runs continue after this one, and it reuses the runner's single-instance lock so an on-demand run and a timer run can never overlap. The run is detached — follow it with `nightshift logs -f`.
 
 **Change the model:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or — once you've applied the staged CLI polish below — just run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below).
 
