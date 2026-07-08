@@ -80,7 +80,7 @@ chmod 600 ~/claude-night-shift/secrets/github-token
 # Review the config: repo slug, working hours, thresholds:
 open -e ~/claude-night-shift/config.env
 
-# Create the status/priority labels on the hub repo:
+# Create the status/priority/model labels on the hub repo:
 GH_TOKEN=$(cat ~/claude-night-shift/secrets/github-token) bash ~/claude-night-shift/tasks-repo/ops/setup-labels.sh
 ```
 
@@ -141,7 +141,9 @@ nightshift begin-run    # ...and kick off the first run immediately
 
 It runs through the very same gates (working hours, budget, the hard caps) and refuses — with the reason printed — if they say no, or if a run is already in progress. It never loosens a limit; it only changes *when* a run may start, never *whether* one is allowed. The scheduled hourly timer is left untouched, so normal runs continue after this one, and it reuses the runner's single-instance lock so an on-demand run and a timer run can never overlap. The run is detached — follow it with `nightshift logs -f`.
 
-**Change the model:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or — once you've applied the staged CLI polish below — just run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below).
+**Change the model, account-wide:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or — once you've applied the staged CLI polish below — just run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below). This is the *baseline* — what runs when a task doesn't ask for anything more specific.
+
+**Change the model, per task:** add a `model:opus` (or `model:sonnet`/`model:haiku`/`model:fable`) label to a single issue to run just that task under a different model, without touching the account-wide baseline. The guard resolves it before starting the invocation, so `night-shift.sh` launches `claude` with the right `--model` flag from the start — no mid-session switching, no extra cost on tasks that don't ask for it. A tag it doesn't recognize (or none at all) just falls back to the baseline. Run `nightshift update-models` occasionally to check for new Claude model releases and create their labels automatically — see DESIGN.md's "Per-task model tags" for the full precedence rules and how it's tested. (Live once you've applied the staged roadmap items below.)
 
 **Change it from your phone, no laptop required:** edit [`CONTROL.md`](repo/CONTROL.md) at your hub repo's root, from the GitHub web UI or mobile app. It's a plain two-line `mode:` / `model:` panel — same effect as `nightshift vacation` or `nightshift model`, but reachable from anywhere. It's protected the same way `CLAUDE.md` and `RUNNER_PROMPT.md` are: the agent's own tools categorically cannot edit it, so it's safe to treat as a trusted remote switch. (Live once you've applied the staged roadmap items below — until then, the file exists but `check_budget.py` doesn't read it yet.)
 
