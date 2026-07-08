@@ -122,6 +122,7 @@ Run this at an off-hours moment (evening or weekend) for a real dry run of the w
 
 ```bash
 nightshift status                  # current mode, and what the guard would decide right now
+nightshift begin-run               # start one run now, as if the hourly timer just fired (see below)
 nightshift day-off                 # run anytime today; reverts automatically at midnight
 nightshift day-off 2026-07-04      # ...or through a specific date, inclusive
 nightshift vacation 2026-07-20     # also stop reserving weekly budget, through a date
