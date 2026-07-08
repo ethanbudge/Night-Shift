@@ -123,13 +123,16 @@ print(d.get("model_override") or "")
     [ -z "$effective_model" ] && effective_model="${MODEL:-}"
     model_args=()
     [ -n "$effective_model" ] && model_args=(--model "$effective_model")
+    # ${model_args[@]+"${model_args[@]}"} not "${model_args[@]}": macOS ships
+    # bash 3.2, which treats an empty array as unset under `set -u` and
+    # aborts the whole run before claude is ever invoked.
     perl -e 'alarm shift; exec @ARGV' "$((TASK_TIMEOUT_MIN * 60))" \
         "$CLAUDE_BIN" -p "$(cat "$REPO_DIR/RUNNER_PROMPT.md")" \
         --settings "$BASE/runner-settings.json" \
         --permission-mode acceptEdits \
         --max-turns "$MAX_TURNS_PER_TASK" \
         --output-format json \
-        "${model_args[@]}" \
+        "${model_args[@]+"${model_args[@]}"}" \
         > "$RUN_LOG" 2>>"$LOG"
     rc=$?
     tasks=$((tasks + 1))
