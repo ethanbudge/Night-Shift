@@ -21,6 +21,17 @@ BASE="$(cd "$(dirname "$(readlink "$0" 2>/dev/null || echo "$0")")" && pwd)"
 MODE_FILE="${MODE_FILE:-$HOME/claude-night-shift/mode}"
 LOG_DIR="${LOG_DIR:-$HOME/claude-night-shift/logs}"
 
+# Export the runtime config the same way night-shift.sh does before any gate
+# check, so the decision we show (status) or pre-flight (begin-run) matches what
+# a real run would actually decide. GITHUB_REPO is the one that bites: without
+# it check_budget can't fetch CONTROL.md, so status/pre-check silently ignore a
+# remote override and disagree with the run (e.g. report a local day-off as
+# "go" when CONTROL.md's more-restrictive normal would veto it).
+export WORK_START_HOUR WORK_END_HOUR WORKDAYS PCT_PER_WORK_HOUR SAFETY_FACTOR \
+       MIN_SURPLUS_START MIN_SURPLUS_CONTINUE WEEKLY_HARD_CAP \
+       FIVE_HOUR_MAX_START FIVE_HOUR_MAX_CONTINUE LOG_DIR MODE_FILE MODEL \
+       SECRETS_DIR GITHUB_REPO
+
 # PATH lookup rather than a hardcoded /usr/bin/python3: that path doesn't
 # exist on every Linux distro (and isn't guaranteed on macOS either once
 # Command Line Tools moves), whereas `python3` on PATH is the one thing every
@@ -94,7 +105,8 @@ case "$cmd" in
         if [ "$rc" -ne 0 ]; then
             echo "begin-run refused -- the gates say no right now:"
             echo "  ${decision:-(no output; check_budget.py exited $rc)}"
-            echo "tip: 'nightshift day-off' lifts the working-hours gate for today."
+            echo "tip: 'nightshift day-off' lifts the working-hours gate for today -- but a"
+            echo "     more-restrictive mode in CONTROL.md (e.g. normal) overrides it, so set it there too."
             exit 1
         fi
 
