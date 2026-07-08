@@ -49,7 +49,21 @@ case "$cmd" in
         echo "model override: ${MODEL:-(none -- account default)}"
         echo "guard decision right now:"
         if [ -n "$PYTHON3" ]; then
-            MODE_FILE="$MODE_FILE" "$PYTHON3" "$BASE/check_budget.py" --mode start || true
+            # rc=$? on a separate line would abort under `set -e` before it runs;
+            # `|| rc=$?` handles the non-zero exit so the script survives it.
+            rc=0
+            decision="$(MODE_FILE="$MODE_FILE" "$PYTHON3" "$BASE/check_budget.py" --mode start)" || rc=$?
+            # Mirror night-shift.sh's one-shot refresh: the CLI's OAuth token
+            # expires every few hours, so a status check between runs otherwise
+            # reports a scary "token rejected" error for what the real run would
+            # transparently refresh and retry. Only bother if we have the CLI.
+            if [ "$rc" -eq 3 ] && [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
+                echo "  (OAuth token stale; refreshing with a minimal claude call...)"
+                "$CLAUDE_BIN" -p "Reply with exactly: ok" \
+                    --model claude-haiku-4-5-20251001 >/dev/null 2>&1 || true
+                decision="$(MODE_FILE="$MODE_FILE" "$PYTHON3" "$BASE/check_budget.py" --mode start)" || true
+            fi
+            echo "$decision"
         else
             echo "  (skipped: python3 not found on PATH)"
         fi
