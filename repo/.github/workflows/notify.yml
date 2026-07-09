@@ -1,9 +1,19 @@
 # Push notification to your phone (via ntfy.sh) when Night Shift starts a task,
-# needs input, or finishes one. Fires on exactly three label events -- nothing
+# needs input, finishes one, or an escalated model starts reviewing a completed
+# task's code. Fires on three label events plus one comment marker -- nothing
 # else, no inbox spam. A resumed task re-labeled status:in-progress after it was
 # already status:in-progress doesn't re-fire "started" -- GitHub only emits
 # `labeled` when a label is newly added, so multi-hour resumes of one task stay
 # silent on this event, by design.
+#
+# The review-start ping can't be a label event like the other three: the review
+# pass doesn't touch the issue's status:* label at all (it's reviewing an issue
+# that's already status:in-review, and CLAUDE.md allows exactly one status:*
+# label per issue), and the reviewing agent only knows WHICH issue it picked
+# from inside its own invocation -- night-shift.sh can't pre-announce it before
+# starting claude. So REVIEW_PROMPT.md has the review agent post a comment
+# containing a fixed marker phrase as its first action after picking a
+# candidate, and this workflow's second job watches for that comment instead.
 #
 # One-time setup:
 #   1. Pick a long, private topic name (it acts as a password), e.g.
@@ -16,10 +26,12 @@ name: Notify phone
 on:
   issues:
     types: [labeled]
+  issue_comment:
+    types: [created]
 
 jobs:
   push:
-    if: github.event.label.name == 'status:needs-human' || github.event.label.name == 'status:in-review' || github.event.label.name == 'status:in-progress'
+    if: github.event_name == 'issues' && (github.event.label.name == 'status:needs-human' || github.event.label.name == 'status:in-review' || github.event.label.name == 'status:in-progress')
     runs-on: ubuntu-latest
     steps:
       - name: Send ntfy push
@@ -64,6 +76,38 @@ jobs:
             -H "Title: $HEADER" \
             -H "Priority: $PRIO" \
             -H "Tags: $TAGS" \
+            -H "Click: $URL" \
+            -d "$BODY" \
+            "https://ntfy.sh/$TOPIC"
+
+  push_review_start:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      !github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'Night Shift') &&
+      contains(github.event.comment.body, 'Starting review pass')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send ntfy push (review started)
+        env:
+          TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TITLE: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          NUM: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if [ -z "$TOPIC" ]; then
+            echo "NTFY_TOPIC secret not set; skipping"
+            exit 0
+          fi
+          # Pulls "claude-sonnet-5 -> claude-opus-4-8" out of the review agent's
+          # "Starting review pass (escalating X -> Y)." comment (see REVIEW_PROMPT.md).
+          ESCALATION="$(echo "$COMMENT_BODY" | grep -oE '\(escalating [^)]*\)' | head -1 | sed -E 's/^\(escalating //; s/\)$//')"
+          BODY="#$NUM: $TITLE${ESCALATION:+ ($ESCALATION)}"
+          curl -sS \
+            -H "Title: Night Shift review started" \
+            -H "Priority: low" \
+            -H "Tags: mag" \
             -H "Click: $URL" \
             -d "$BODY" \
             "https://ntfy.sh/$TOPIC"

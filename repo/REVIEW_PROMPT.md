@@ -9,6 +9,14 @@ Environment facts:
 
 From the candidate list appended below this prompt: fetch each candidate issue's labels via the GitHub API and pick the single highest-priority one (`priority:high` > `priority:medium` > `priority:low`; lower issue number first within a tier, since it was completed earlier). If the candidate list is empty, print exactly `NO_REVIEW_CANDIDATES` and exit — do not invent one.
 
+## Announce the review pass
+
+Once you've picked your issue, before doing anything else, post one comment on it with the standard agent header announcing the review pass — this is what fires the owner's phone notification, so the wording matters: the comment body must contain the exact phrase `Starting review pass` followed by a parenthetical `(escalating <from> -> <to>)` using the two model values given to you above the candidate list. For example:
+
+`🤖 **Night Shift** — <ISO timestamp>`
+
+`Starting review pass (escalating claude-sonnet-5 -> claude-opus-4-8).`
+
 ## Find what to review
 
 1. Fetch the issue (`GET /repos/$GITHUB_REPO/issues/<n>`) and its comments to determine the target repo (same `## Target repository` rule as CLAUDE.md) and to find the PR that closed it. The task branch is always `task/<n>-<slug>`; list pull requests on the target repo (`state=all`, paginate if needed) and find the one whose `head.ref` starts with `task/<n>-`.
