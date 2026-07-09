@@ -60,7 +60,7 @@ claude   # run /login, sign in with the account Night Shift should spend from
    - Repository access: this repo, plus every project repo you want it to work on. This list is the actual security boundary — it's the only thing deciding what the agent can ever touch.
    - Permissions: **Contents** (read/write), **Issues** (read/write), **Pull requests** (read/write), **Metadata** (read). All four — issue comments, label changes, and PRs each need their own scope, and a token missing one will silently 403 on exactly that action.
    - Set an expiry you're comfortable rotating.
-5. **Phone notifications** (free, via [ntfy.sh](https://ntfy.sh)): pick a long random topic name — it functions as a password, e.g. `nightshift-x7k2m9qframble` — add it as an Actions secret named `NTFY_TOPIC`, and subscribe to that topic in the ntfy app. The included workflow pings it only when the agent needs your input or finishes a task. (GitHub's own notifications stay silent here — the agent acts as *your* account, and GitHub never notifies you about your own activity.)
+5. **Phone notifications** (free, via [ntfy.sh](https://ntfy.sh)): pick a long random topic name — it functions as a password, e.g. `nightshift-x7k2m9qframble` — add it as an Actions secret named `NTFY_TOPIC`, and subscribe to that topic in the ntfy app. The included workflow pings it when a task starts (with the model it's running under), when the agent needs your input, and when it finishes a task. (GitHub's own notifications stay silent here — the agent acts as *your* account, and GitHub never notifies you about your own activity.)
 
 ### 3 — Install the runner
 
