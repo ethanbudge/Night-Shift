@@ -23,3 +23,11 @@ make_label "status:in-review"   "1d76db" "PR open, awaiting your review"
 make_label "priority:high"      "b60205" "Work on this first"
 make_label "priority:medium"    "d4c5f9" "Normal priority"
 make_label "priority:low"       "c2e0c6" "When nothing better to do"
+# Optional per-task model request -- see MODEL_ALLOWLIST in config.env and
+# DESIGN.md's "Per-task model tags". An issue with none of these falls back
+# to the baseline MODEL. Add more here (and to MODEL_ALLOWLIST) as new model
+# families ship, or run `nightshift update-models` to do it for you.
+make_label "model:opus"         "5319e7" "Task requests the Opus model"
+make_label "model:sonnet"       "1d76db" "Task requests the Sonnet model"
+make_label "model:haiku"        "c5def5" "Task requests the Haiku model"
+make_label "model:fable"        "d4c5f9" "Task requests the Fable model"

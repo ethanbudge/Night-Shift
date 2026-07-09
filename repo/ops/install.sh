@@ -30,7 +30,7 @@ esac
 echo "==> Installing to $DEST"
 mkdir -p "$DEST/logs" "$DEST/secrets"
 chmod 700 "$DEST/secrets"
-for f in night-shift.sh check_budget.py runner-settings.json mode.sh secret_scan.py; do
+for f in night-shift.sh check_budget.py check_queue.py runner-settings.json mode.sh secret_scan.py; do
     cp "$SRC/$f" "$DEST/$f"
 done
 chmod +x "$DEST/mode.sh" "$DEST/night-shift.sh"

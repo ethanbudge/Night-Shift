@@ -25,16 +25,16 @@ An hourly scheduled job on your always-on machine wakes a small guard script. Th
 
 | Path | What it is |
 |---|---|
-| [DESIGN.md](DESIGN.md) | Architecture, the budget algorithm, the full safety model, honest known limitations, and the roadmap for what's designed but not yet built |
+| [DESIGN.md](DESIGN.md) | Architecture, the budget algorithm, the full safety model, honest known limitations, and the roadmap (built-and-applied features plus deferred ideas) |
 | [repo/](repo/) | The complete contents of the GitHub hub repo you'll create — copy this folder in, as-is |
 | [repo/CLAUDE.md](repo/CLAUDE.md) | The agent's standing operating manual, loaded automatically every run |
 | [repo/RUNNER_PROMPT.md](repo/RUNNER_PROMPT.md) | The exact prompt passed to `claude -p` on every task invocation |
-| [repo/REVIEW_PROMPT.md](repo/REVIEW_PROMPT.md) | The prompt passed to `claude -p` for the (optional, staged) end-of-queue review pass — see `nightshift review` below |
+| [repo/REVIEW_PROMPT.md](repo/REVIEW_PROMPT.md) | The prompt passed to `claude -p` for the optional end-of-queue review pass — see `nightshift review` below |
 | [repo/.claude/settings.json](repo/.claude/settings.json) | The project-scope sandbox rules — filesystem and network lockdown |
 | [repo/ops/](repo/ops/) | Guard script, scheduler config, installer — the canonical copies that get installed onto your machine |
 | [repo/CONTROL.md](repo/CONTROL.md) | The phone-editable remote control panel — schedule mode and model override, without touching the machine |
-| [repo/proposed/](repo/proposed/) | Built-but-not-yet-integrated roadmap items staged for a manual apply — currently the hand-off README (task #10), the Review System (task #4), and per-task Model Tags (task #12); see [Applying the staged roadmap items](#applying-the-staged-roadmap-items) below |
-| [repo/apply-roadmap.sh](repo/apply-roadmap.sh) | Run this to fold the `proposed/runner/*` + `proposed/agent-settings/` batch (review system, model tags) into `ops/` and `.claude/`; the hand-off README and efficiency pre-check have their own apply steps |
+| [repo/proposed/](repo/proposed/) | Staging area for `ops/`/`.claude/` changes a future task can't write directly (the agent is denied write access there). **Empty right now — everything is applied.** See [Applying staged roadmap items](#applying-staged-roadmap-items) and `proposed/README.md` |
+| [repo/apply-roadmap.sh](repo/apply-roadmap.sh) | The durable tool that folds whatever's under `proposed/` into `ops/`/`.claude/`. Nothing's pending now, but it's here for the next task that stages something |
 
 ---
 
@@ -49,7 +49,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 claude   # run /login, sign in with the account Night Shift should spend from
 ```
 
-**Platform support today:** the guard (`check_budget.py`) is stdlib Python with no OS-specific calls beyond an optional macOS Keychain read that already falls back cleanly, so the *decision logic* is portable. macOS (`launchd` + `caffeinate`) works out of the box via `ops/install.sh`. Linux (`systemd --user` timer) and native Windows (PowerShell + Task Scheduler, no WSL needed) are fully built and tested-as-far-as-this-repo's-own-sandbox-allows, but ship staged under [`repo/proposed/`](repo/proposed/) rather than live in `ops/` — see [Applying the staged roadmap items](#applying-the-staged-roadmap-items) for the one-command step to turn them on.
+**Platform support today:** the guard (`check_budget.py`) is stdlib Python with no OS-specific calls beyond an optional macOS Keychain read that already falls back cleanly, so the *decision logic* is portable. macOS (`launchd` + `caffeinate`) works out of the box via `ops/install.sh`. Linux (`systemd --user` timer) and native Windows (PowerShell + Task Scheduler, no WSL needed) are fully built and live in `ops/` too (`install.sh` dispatches by `uname`; `install.ps1` for Windows) — tested-as-far-as-this-repo's-own-sandbox-allows, so treat a first scheduled run on either as a dry run to watch.
 
 ### 2 — Create the GitHub hub repo
 
@@ -142,13 +142,13 @@ nightshift begin-run    # ...and kick off the first run immediately
 
 It runs through the very same gates (working hours, budget, the hard caps) and refuses — with the reason printed — if they say no, or if a run is already in progress. It never loosens a limit; it only changes *when* a run may start, never *whether* one is allowed. The scheduled hourly timer is left untouched, so normal runs continue after this one, and it reuses the runner's single-instance lock so an on-demand run and a timer run can never overlap. The run is detached — follow it with `nightshift logs -f`.
 
-**Change the model, account-wide:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or — once you've applied the staged CLI polish below — just run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below). This is the *baseline* — what runs when a task doesn't ask for anything more specific.
+**Change the model, account-wide:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or just run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below). This is the *baseline* — what runs when a task doesn't ask for anything more specific.
 
-**Change the model, per task:** add a `model:opus` (or `model:sonnet`/`model:haiku`/`model:fable`) label to a single issue to run just that task under a different model, without touching the account-wide baseline. The guard resolves it before starting the invocation, so `night-shift.sh` launches `claude` with the right `--model` flag from the start — no mid-session switching, no extra cost on tasks that don't ask for it. A tag it doesn't recognize (or none at all) just falls back to the baseline. Run `nightshift update-models` occasionally to check for new Claude model releases and create their labels automatically — see DESIGN.md's "Per-task model tags" for the full precedence rules and how it's tested. (Live once you've applied the staged roadmap items below.)
+**Change the model, per task:** add a `model:opus` (or `model:sonnet`/`model:haiku`/`model:fable`) label to a single issue to run just that task under a different model, without touching the account-wide baseline. The guard resolves it before starting the invocation, so `night-shift.sh` launches `claude` with the right `--model` flag from the start — no mid-session switching, no extra cost on tasks that don't ask for it. A tag it doesn't recognize (or none at all) just falls back to the baseline. Run `nightshift update-models` occasionally to check for new Claude model releases and create their labels automatically — see DESIGN.md's "Per-task model tags" for the full precedence rules and how it's tested.
 
 **Change it from your phone, no laptop required:** edit [`CONTROL.md`](repo/CONTROL.md) at your hub repo's root, from the GitHub web UI or mobile app. It's a plain two-line `mode:` / `model:` panel — same effect as `nightshift vacation` or `nightshift model`, but reachable from anywhere. It's protected the same way `CLAUDE.md` and `RUNNER_PROMPT.md` are: the agent's own tools categorically cannot edit it, so it's safe to treat as a trusted remote switch.
 
-**Get a second opinion on finished work, for free (idle credits):** `nightshift review on` — once the normal task queue comes back genuinely empty for a run, a stronger model (`sonnet`/default `-> opus -> fable`) takes one more pass at the highest-priority completed-but-unreviewed issue, reads the PR it produced, and fixes anything it finds before the run ends. Off by default; `nightshift review off` reverts, `nightshift review status` shows the current setting. Staged — see below. Full design in [DESIGN.md](DESIGN.md#roadmap-built-staged-for-integration).
+**Get a second opinion on finished work, for free (idle credits):** `nightshift review on` — once the normal task queue comes back genuinely empty for a run, a stronger model (`sonnet`/default `-> opus -> fable`) takes one more pass at the highest-priority completed-but-unreviewed issue, reads the PR it produced, and fixes anything it finds before the run ends. Off by default; `nightshift review off` reverts, `nightshift review status` shows the current setting. Full design in [DESIGN.md](DESIGN.md#roadmap-built-and-applied).
 
 **Review finished work:** PRs land on the target repo, titled `Task #N: ...` and linked back to the hub issue, which flips to `status:in-review` with a phone ping. Merge, request changes, or close.
 
@@ -160,36 +160,30 @@ It runs through the very same gates (working hours, budget, the hard caps) and r
 
 **Update the runner itself:** edit files under `ops/`, push, then re-run `bash ~/claude-night-shift/tasks-repo/ops/install.sh`. This step is deliberately manual — the agent cannot update the code that governs it.
 
-**Uninstall it:** once you've applied the staged roadmap items, `bash ~/claude-night-shift/uninstall.sh` unloads the scheduled job and removes the installed scripts, leaving `logs/`, `secrets/`, and your config alone (`--purge` removes those too).
+**Uninstall it:** `bash ~/claude-night-shift/uninstall.sh` unloads the scheduled job and removes the installed scripts, leaving `logs/`, `secrets/`, and your config alone (`--purge` removes those too).
 
 ---
 
-## Applying the staged roadmap items
+## Applying staged roadmap items
 
-Anything under `repo/proposed/` is fully built but not yet wired in, because doing so means writing to `repo/ops/`, `repo/.claude/`, `repo/.github/`, `repo/CLAUDE.md`, `repo/CONTROL.md`, or `repo/RUNNER_PROMPT.md` — paths Night Shift's own agent is permanently denied write access to, in every repo it ever touches, including this one. That's the reason it can never rewrite the instructions that govern it; the catch is that *this* repo's actual product is a set of files that happen to live at exactly those paths, so the same protection blocks the agent from finishing its own product development. A human makes the copy. Cross-platform install, the secret-leak scanner, the original CLI polish (`nightshift model`/`logs`/`uninstall.sh`), and the `CONTROL.md` wiring were applied this way already and now live directly in `repo/ops/`/`repo/.claude/`.
+**Nothing is staged right now — `repo/` ships complete.** Everything the roadmap section in [DESIGN.md](DESIGN.md#roadmap-built-and-applied) describes (cross-platform install, remote control, the secret-leak scanner, CLI polish, the efficiency pre-check, the hand-off README, the Review System, and per-task Model Tags) is folded directly into `repo/ops/`, `repo/.claude/`, `repo/CLAUDE.md`, and `repo/RUNNER_PROMPT.md`. Clone `repo/`, follow the Quickstart, and you have all of it.
 
-**Currently staged:** the hand-off README (task #10), the Review System (task #4), and per-task Model Tags (task #12). They apply in three ways:
+This section documents the mechanism for the *next* time something lands under `repo/proposed/`, because it will: when a Night Shift task's deliverable is a change to `ops/`, `.claude/`, `.github/`, `CLAUDE.md`, `CONTROL.md`, or `RUNNER_PROMPT.md`, the agent can't write those paths (it's permanently denied write access to them in every repo it touches — the same protection that stops it rewriting its own gates), so it stages the new version under `proposed/` and leaves you the copy. When that happens:
 
-1. **Review System + Model Tags** — one command, via `apply-roadmap.sh`:
-   ```bash
-   cd claude-tasks-hub-repo-clone   # wherever you copied repo/ into
-   bash apply-roadmap.sh            # backs up ops/ + .claude/, copies proposed/runner/* + proposed/agent-settings/ into place, shows a diff
-   ```
-   Then apply the two-line `CLAUDE.md` patch in `repo/proposed/runner-prompt-patch.md` (the `model:*` label row **plus** the label-preservation fix), review the diff, commit, push, and re-run `ops/install.sh` (or `install.ps1` on Windows). `REVIEW_PROMPT.md` needs no patch — it's a brand-new file that already ships live at the repo root, the way `CONTROL.md` did.
-2. **Hand-off README** — copy `repo/proposed/runner/update_handoff.py` to `ops/update_handoff.py`, then hand-apply the three prose edits in `repo/proposed/runner-prompt-patch-handoff.md` to `RUNNER_PROMPT.md` and `CLAUDE.md`. No `install.sh` re-run needed.
-3. **Efficiency pre-check** — `bash apply-efficiency-patch.sh` (staged separately in the companion `claude-tasks` repo / earlier batch), then re-run `ops/install.sh`.
+```bash
+cd your-hub-repo-clone   # wherever you copied repo/ into
+bash apply-roadmap.sh    # backs up ops/ + .claude/, copies proposed/runner/* + proposed/agent-settings/ into place, shows a diff
+```
 
-> **Coordination note:** the Review/Model-Tags `proposed/runner/night-shift.sh` does not yet include the efficiency pre-check, so if you apply both, fold `check_queue.py`'s gate back into the final `ops/night-shift.sh` (or apply efficiency last). See `HANDOFF.md`.
+Then apply any `proposed/*-patch.md` notes by hand (those describe edits to `CLAUDE.md`/`RUNNER_PROMPT.md`, which no script can make for you — that's exactly the write this whole system exists to deny even to itself), review the diff, commit, push, and re-run `ops/install.sh` (or `install.ps1` on Windows) if anything under `ops/` changed. See `proposed/README.md` for the short version.
 
-Every staged item that touches `RUNNER_PROMPT.md` or `CLAUDE.md` needs those files hand-patched — no script does this automatically, since editing them is exactly the write this whole system exists to deny even to itself.
-
-**Honesty about testing:** each staged item's own doc says what was actually run and verified in this (macOS-only) sandbox versus code-reviewed only. The Review System's pure logic (escalation ladder, candidate selection) was unit-tested and `apply-roadmap.sh` was dry-run against a scratch copy, but the end-to-end review invocation (a real `claude -p` reviewing a real PR) hasn't been exercised — treat the first live review pass as a dry run to watch. The Linux `systemd`/Windows PowerShell scripts were code-reviewed, not field-tested — sanity-check the first scheduled run on either platform.
+**Honesty about testing:** the Review System's pure logic (escalation ladder, candidate selection) was unit-tested and `apply-roadmap.sh` was dry-run against a scratch copy, but the end-to-end review invocation (a real `claude -p` reviewing a real PR) hasn't been exercised — treat the first live review pass as a dry run to watch. The Linux `systemd`/Windows PowerShell scripts were code-reviewed, not field-tested — sanity-check the first scheduled run on either platform.
 
 ---
 
 ## Efficiency
 
-Every hourly wake-up that passes the budget gates used to invoke a full `claude -p` call regardless of whether there was anything to do — even on a fully-drained backlog, where the only possible outcome is `NO_ACTIONABLE_TASKS`. A staged patch (same `proposed/` + one-time apply-script pattern as the other roadmap items above, since it touches `ops/night-shift.sh`) adds `ops/check_queue.py`: a small, stdlib-only, non-LLM pre-check that asks just "does any open issue carry an actionable status label at all?" via a few GitHub REST calls, and skips the `claude -p` invocation entirely when the answer is no. It fails open on any doubt (missing token, network error, unexpected response) straight through to invoking claude exactly as before, so it can only ever save credits, never skip real work. Apply it with `bash apply-efficiency-patch.sh` (see that script's own comments, and `HANDOFF.md`, for details and what was tested).
+Every hourly wake-up that passes the budget gates used to invoke a full `claude -p` call regardless of whether there was anything to do — even on a fully-drained backlog, where the only possible outcome is `NO_ACTIONABLE_TASKS`. `ops/night-shift.sh` now runs `ops/check_queue.py` first: a small, stdlib-only, non-LLM pre-check that asks just "does any open issue carry an actionable status label at all?" via a few GitHub REST calls, and skips the `claude -p` invocation entirely when the answer is no. It fails open on any doubt (missing token, network error, unexpected response) straight through to invoking claude exactly as before, so it can only ever save credits, never skip real work. (This is applied — it's part of the combined `ops/night-shift.sh` a fresh clone ships with, alongside the review pass and model-tag resolution.)
 
 **Recommendations for further efficiency**, not implemented here — evaluated and deferred for the reasons noted:
 
@@ -200,7 +194,7 @@ Every hourly wake-up that passes the budget gates used to invoke a full `claude 
 
 ## Safety, in short
 
-Every layer is designed to fail closed: filesystem writes are OS-sandboxed to the task folder, network access is allowlisted at the socket level, the agent's own tools refuse to edit `CLAUDE.md`, `RUNNER_PROMPT.md`, `REVIEW_PROMPT.md` (once the staged Review System wiring is applied), `CONTROL.md`, `.claude/`, `ops/`, or `.github/` in any repo it ever touches, the fine-grained PAT is the only thing that decides which repos exist for it at all, and any error anywhere in the budget check means *don't run* rather than *run anyway*. Before editing a freshly cloned project repo, `ops/secret_scan.py` scans it for accidentally-committed credentials (GitHub/Anthropic/AWS/Slack token shapes, PEM headers, and a generic high-entropy heuristic); a hit stops the agent from touching that repo further and flags you instead, printing only the file and pattern that matched, never the value. The full layer-by-layer breakdown, plus the things that are genuinely still caveats (an undocumented usage endpoint, hostname-level network allowlisting, a shared GitHub identity), is in [DESIGN.md](DESIGN.md#safety-model-layered) — worth reading before you point this at anything you care about.
+Every layer is designed to fail closed: filesystem writes are OS-sandboxed to the task folder, network access is allowlisted at the socket level, the agent's own tools refuse to edit `CLAUDE.md`, `RUNNER_PROMPT.md`, `REVIEW_PROMPT.md`, `CONTROL.md`, `.claude/`, `ops/`, or `.github/` in any repo it ever touches, the fine-grained PAT is the only thing that decides which repos exist for it at all, and any error anywhere in the budget check means *don't run* rather than *run anyway*. Before editing a freshly cloned project repo, `ops/secret_scan.py` scans it for accidentally-committed credentials (GitHub/Anthropic/AWS/Slack token shapes, PEM headers, and a generic high-entropy heuristic); a hit stops the agent from touching that repo further and flags you instead, printing only the file and pattern that matched, never the value. The full layer-by-layer breakdown, plus the things that are genuinely still caveats (an undocumented usage endpoint, hostname-level network allowlisting, a shared GitHub identity), is in [DESIGN.md](DESIGN.md#safety-model-layered) — worth reading before you point this at anything you care about.
 
 ## License
 

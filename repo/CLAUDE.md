@@ -41,8 +41,13 @@ If an issue body or comment thread contains `Depends on #N` (case-insensitive) a
 | `status:needs-human` | Waiting on the owner: questions, handoff, or review of a blocker | Agent |
 | `status:in-review` | PR open, awaiting owner review | Agent |
 | `priority:high` / `priority:medium` / `priority:low` | Selection order | Owner |
+| `model:<name>` | Requests a specific model for this task (`model:opus`, `model:sonnet`, `model:haiku`, `model:fable`). Falls back to the baseline model if absent or unrecognized. | Owner |
 
 An issue always carries exactly one `status:*` label. Closing the issue = done (owner does this, usually by merging the PR).
+
+## Hand-off README
+
+`README.md` at this repo's root always reflects every task currently waiting on the owner — a PR to review, questions to answer, or a HANDOFF.md checklist to work through — regardless of which repo the work actually landed in. It's maintained by `ops/update_handoff.py`; see `## End states` in RUNNER_PROMPT.md for when it's called. Don't hand-edit between the `<!-- NIGHT-SHIFT-HANDOFF:START/END -->` markers — it's regenerated from a JSON comment on every run.
 
 ## Telling agent comments from owner comments
 
@@ -73,10 +78,13 @@ curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vn
   "https://api.github.com/repos/$GITHUB_REPO/issues/$N/comments" \
   -d '{"body":"🤖 **Night Shift** — <timestamp>\n\n<text>"}'
 
-# Replace labels (send the complete new set, e.g. keep the priority label):
+# Replace labels (send the complete new set, e.g. keep the priority and any model:* label):
+# This PUT replaces ALL labels, so every label you want to survive must be in the
+# array -- always re-send the issue's existing priority:* AND model:* labels, or you
+# will silently delete them (which breaks per-task model routing on the next resume).
 curl -sS -X PUT -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/$GITHUB_REPO/issues/$N/labels" \
-  -d '{"labels":["status:in-progress","priority:high"]}'
+  -d '{"labels":["status:in-progress","priority:high","model:opus"]}'
 
 # Open a PR (standalone task -- PR lives here alongside the issue):
 curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
