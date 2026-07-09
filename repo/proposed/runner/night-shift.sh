@@ -14,7 +14,7 @@ source "$BASE/config.env"
 export WORK_START_HOUR WORK_END_HOUR WORKDAYS PCT_PER_WORK_HOUR SAFETY_FACTOR \
        MIN_SURPLUS_START MIN_SURPLUS_CONTINUE WEEKLY_HARD_CAP \
        FIVE_HOUR_MAX_START FIVE_HOUR_MAX_CONTINUE LOG_DIR MODE_FILE MODEL \
-       SECRETS_DIR GITHUB_REPO
+       MODEL_ALLOWLIST SECRETS_DIR GITHUB_REPO
 
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/night-shift.log"
@@ -62,9 +62,12 @@ esac
 budget() { "$PYTHON3" "$BASE/check_budget.py" --mode "$1" 2>>"$LOG"; }
 
 # Resolve the model a decision JSON blob implies right now: CONTROL.md's
-# model line (riding along as model_override) beats the local MODEL knob,
-# which beats the account default. Shared by the task loop and the review
-# loop below so the two can't drift out of sync on precedence.
+# model line (riding along as model_override) beats the picked task's
+# model:<tag> label (riding along as task_model_id), which beats the local
+# MODEL knob, which beats the account default. Shared by the task loop and the
+# review loop below so the two can't drift out of sync on precedence. (During
+# the review loop the queue is empty, so no task is selected and task_model_id
+# is absent -- the helper then collapses to model_override, as before.)
 effective_model_for() {
     "$PYTHON3" -c '
 import json, sys
@@ -72,7 +75,7 @@ try:
     d = json.loads(sys.argv[1])
 except (ValueError, IndexError):
     d = {}
-print(d.get("model_override") or "")
+print(d.get("model_override") or d.get("task_model_id") or "")
 ' "$1" 2>/dev/null
 }
 
@@ -123,11 +126,18 @@ while [ "$tasks" -lt "$MAX_TASKS_PER_RUN" ]; do
     # hard wall-clock cap everywhere perl is present (macOS and virtually
     # every Linux base image ship it).
     #
-    # Model precedence: CONTROL.md's model line (fetched by check_budget.py
-    # and riding along in $decision as model_override) beats the local MODEL
-    # knob in config.env, which beats the account default -- CONTROL.md is
-    # the "I'm away and need to change this right now" channel, so it should
-    # win over a setting that requires being at the machine to change.
+    # Model precedence (highest wins):
+    #   1. CONTROL.md's model line (fetched by check_budget.py, rides along in
+    #      $decision as model_override) -- the "I'm away and need to change
+    #      this right now" channel, so it beats everything, including a
+    #      specific task's own request.
+    #   2. task_model_id -- the model:<tag> label on the specific issue
+    #      check_budget.py picked as the next task (resolved through
+    #      MODEL_ALLOWLIST; absent whenever the issue has no tag, or an
+    #      unrecognized one -- see check_budget.py's resolve_task_model()).
+    #   3. MODEL from config.env -- the account-wide baseline.
+    #   4. unset -- claude's own account default.
+    # Resolution 1+2 happens in effective_model_for; 3+4 here.
     effective_model="$(effective_model_for "$decision")"
     [ -z "$effective_model" ] && effective_model="${MODEL:-}"
     model_args=()
@@ -160,7 +170,7 @@ while [ "$tasks" -lt "$MAX_TASKS_PER_RUN" ]; do
         break
     fi
     result="$(grep -o 'TASK_COMPLETE [0-9]* [A-D]' "$RUN_LOG" 2>/dev/null | head -1 || true)"
-    log "invocation finished: ${result:-no completion marker}"
+    log "invocation finished: ${result:-no completion marker} (model: ${effective_model:-account default})"
 
     # Record finished (end-state A) issues for the review pass below -- this
     # is the only source of truth the review loop has for "what got built

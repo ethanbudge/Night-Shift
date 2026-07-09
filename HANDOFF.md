@@ -96,3 +96,45 @@ live issue/PR has not been run end-to-end; treat the first as a dry run.
 > features share the same staged `proposed/runner/*` files, so one
 > `apply-roadmap.sh` run applies both. See the Model Tags section for its
 > one extra `CLAUDE.md` patch (which includes a real label-preservation bug fix).
+
+---
+
+## Task #12 — Shift Model Tags  (apply-roadmap.sh + CLAUDE.md patch)
+
+A task issue can request a specific model with a `model:<tag>` label
+(`model:opus`/`model:sonnet`/`model:haiku`/`model:fable`, already created live
+on the hub repo). The guard resolves the tag *before* launching `claude` (the
+model is a CLI flag, fixed before the process starts), via
+`check_budget.py`'s new `select_next_task()`/`resolve_task_model()` against the
+`MODEL_ALLOWLIST` knob in `config.env`. Precedence: `CONTROL.md`'s `model:`
+override → the task's `model:<tag>` → baseline `MODEL` → account default. A
+missing or unrecognized tag silently falls back to baseline — never a hard
+failure. `nightshift update-models` checks for newly-released models and
+creates their labels for you.
+
+Applied by the **same `apply-roadmap.sh` run** as the Review System above
+(both features share the staged `proposed/runner/*` files, which is why they
+were integrated together on merge). The one extra step is a hand-patch:
+
+```bash
+bash apply-roadmap.sh    # (same run as Task #4 — do it once)
+# then apply proposed/runner-prompt-patch.md to CLAUDE.md + RUNNER_PROMPT.md by hand:
+#   - add a model:* row to CLAUDE.md's Labels table
+#   - FIX: CLAUDE.md's "replace labels" guidance only says to preserve the priority
+#     label, so the first status change on a tagged issue would silently DELETE its
+#     model:* label. The patch corrects it to preserve model:* too. Apply this even
+#     if you drop the rest of the feature.
+#   - one FYI sentence in RUNNER_PROMPT.md (model chosen before the agent starts)
+bash ops/install.sh
+```
+
+**Try it:** put `model:opus` on a `status:ready` issue, `nightshift begin-run`,
+and check `night-shift.log` for the `(model: claude-opus-4-8)` note.
+
+> **Integration note (done for you):** task #4 and task #12 each staged their own
+> full copy of `proposed/runner/{night-shift.sh,config.env,mode.sh}`. On merge
+> these were combined into one coherent set — the review pass and model-tag
+> resolution now share a single `effective_model_for()` helper and a four-tier
+> precedence chain, and `config.env`/`mode.sh` carry both features' knobs and
+> subcommands. So one `apply-roadmap.sh` lands both; you don't need to reconcile
+> them yourself.
