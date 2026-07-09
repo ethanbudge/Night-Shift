@@ -64,3 +64,35 @@ chmod +x ops/update_handoff.py
 Once applied, a future run's next end state starts populating `README.md`
 automatically. The companion `claude-tasks` PR seeds a first version of that
 README, proving the format end-to-end before the automation is wired up.
+
+---
+
+## Task #4 — Review System  (apply-roadmap.sh)
+
+A toggle (`nightshift review on|off|status`, off by default) that, once the
+normal task queue comes back genuinely empty for a run, gives the
+highest-priority completed-and-unreviewed issue one more pass from a stronger
+model (`sonnet`/default → `opus` → `fable`) before the run ends — turning idle
+end-of-queue credits into a second opinion. Built: the review sub-loop in
+`proposed/runner/night-shift.sh`, the `REVIEW_MODE` knob in
+`proposed/runner/config.env`, the `review` subcommand in
+`proposed/runner/mode.sh`, deny-list entries protecting `REVIEW_PROMPT.md` in
+`proposed/agent-settings/settings.json` + `proposed/runner/runner-settings.json`,
+and `REVIEW_PROMPT.md` itself (already live at the repo root).
+
+```bash
+bash apply-roadmap.sh    # backs up ops/ + .claude/, copies proposed/runner/* + proposed/agent-settings/ into place, shows a diff
+# review the diff, commit, push, then:
+bash ops/install.sh
+nightshift review on     # turn it on when you're ready
+```
+
+`REVIEW_PROMPT.md` needs no manual patch (it's a new file, not an edit to a
+protected one). **Watch the first real review pass closely** — the wrapper
+logic is unit-tested, but the actual `claude -p` review invocation against a
+live issue/PR has not been run end-to-end; treat the first as a dry run.
+
+> `apply-roadmap.sh` also carries the Model Tags batch (task #12) — the two
+> features share the same staged `proposed/runner/*` files, so one
+> `apply-roadmap.sh` run applies both. See the Model Tags section for its
+> one extra `CLAUDE.md` patch (which includes a real label-preservation bug fix).

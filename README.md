@@ -29,10 +29,12 @@ An hourly scheduled job on your always-on machine wakes a small guard script. Th
 | [repo/](repo/) | The complete contents of the GitHub hub repo you'll create — copy this folder in, as-is |
 | [repo/CLAUDE.md](repo/CLAUDE.md) | The agent's standing operating manual, loaded automatically every run |
 | [repo/RUNNER_PROMPT.md](repo/RUNNER_PROMPT.md) | The exact prompt passed to `claude -p` on every task invocation |
+| [repo/REVIEW_PROMPT.md](repo/REVIEW_PROMPT.md) | The prompt passed to `claude -p` for the (optional, staged) end-of-queue review pass — see `nightshift review` below |
 | [repo/.claude/settings.json](repo/.claude/settings.json) | The project-scope sandbox rules — filesystem and network lockdown |
 | [repo/ops/](repo/ops/) | Guard script, scheduler config, installer — the canonical copies that get installed onto your machine |
 | [repo/CONTROL.md](repo/CONTROL.md) | The phone-editable remote control panel — schedule mode and model override, without touching the machine |
-| [repo/proposed/](repo/proposed/) | Built-but-not-yet-integrated items awaiting a manual copy into `ops/`/`RUNNER_PROMPT.md` — currently just the hand-off README wiring (task #10); each item's own doc in this folder gives the exact copy-and-patch steps, since the target paths are ones the agent can never write itself |
+| [repo/proposed/](repo/proposed/) | Built-but-not-yet-integrated roadmap items staged for a manual apply — currently the hand-off README (task #10), the Review System (task #4), and per-task Model Tags (task #12); see [Applying the staged roadmap items](#applying-the-staged-roadmap-items) below |
+| [repo/apply-roadmap.sh](repo/apply-roadmap.sh) | Run this to fold the `proposed/runner/*` + `proposed/agent-settings/` batch (review system, model tags) into `ops/` and `.claude/`; the hand-off README and efficiency pre-check have their own apply steps |
 
 ---
 
@@ -140,9 +142,11 @@ nightshift begin-run    # ...and kick off the first run immediately
 
 It runs through the very same gates (working hours, budget, the hard caps) and refuses — with the reason printed — if they say no, or if a run is already in progress. It never loosens a limit; it only changes *when* a run may start, never *whether* one is allowed. The scheduled hourly timer is left untouched, so normal runs continue after this one, and it reuses the runner's single-instance lock so an on-demand run and a timer run can never overlap. The run is detached — follow it with `nightshift logs -f`.
 
-**Change the model:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or — once you've applied the staged CLI polish below — just run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below).
+**Change the model:** set `MODEL` in `~/claude-night-shift/config.env` (e.g. `claude-opus-4-8` for harder tasks, blank for your account's default), or run `nightshift model claude-opus-4-8` (or `nightshift model default` to clear it). Opus finishes tougher tasks in fewer turns but draws down your weekly budget faster — if you switch, keep an eye on `PCT_PER_WORK_HOUR` (below).
 
-**Change it from your phone, no laptop required:** edit [`CONTROL.md`](repo/CONTROL.md) at your hub repo's root, from the GitHub web UI or mobile app. It's a plain two-line `mode:` / `model:` panel — same effect as `nightshift vacation` or `nightshift model`, but reachable from anywhere. It's protected the same way `CLAUDE.md` and `RUNNER_PROMPT.md` are: the agent's own tools categorically cannot edit it, so it's safe to treat as a trusted remote switch. (Live once you've applied the staged roadmap items below — until then, the file exists but `check_budget.py` doesn't read it yet.)
+**Change it from your phone, no laptop required:** edit [`CONTROL.md`](repo/CONTROL.md) at your hub repo's root, from the GitHub web UI or mobile app. It's a plain two-line `mode:` / `model:` panel — same effect as `nightshift vacation` or `nightshift model`, but reachable from anywhere. It's protected the same way `CLAUDE.md` and `RUNNER_PROMPT.md` are: the agent's own tools categorically cannot edit it, so it's safe to treat as a trusted remote switch.
+
+**Get a second opinion on finished work, for free (idle credits):** `nightshift review on` — once the normal task queue comes back genuinely empty for a run, a stronger model (`sonnet`/default `-> opus -> fable`) takes one more pass at the highest-priority completed-but-unreviewed issue, reads the PR it produced, and fixes anything it finds before the run ends. Off by default; `nightshift review off` reverts, `nightshift review status` shows the current setting. Staged — see below. Full design in [DESIGN.md](DESIGN.md#roadmap-built-staged-for-integration).
 
 **Review finished work:** PRs land on the target repo, titled `Task #N: ...` and linked back to the hub issue, which flips to `status:in-review` with a phone ping. Merge, request changes, or close.
 
@@ -158,13 +162,26 @@ It runs through the very same gates (working hours, budget, the hard caps) and r
 
 ---
 
-## Applying staged items in `repo/proposed/`
+## Applying the staged roadmap items
 
-Anything under `repo/proposed/` is fully built but not yet wired in, because doing so means writing to `repo/ops/`, `repo/.claude/`, `repo/.github/`, `repo/CLAUDE.md`, `repo/CONTROL.md`, or `repo/RUNNER_PROMPT.md` — paths Night Shift's own agent is permanently denied write access to, in every repo it ever touches, including this one. That's the reason it can never rewrite the instructions that govern it; the catch is that *this* repo's actual product is a set of files that happen to live at exactly those paths, so the same protection blocks the agent from finishing its own product development. A human has to make this one copy, per staged item — check `repo/proposed/` for what's currently there and its accompanying doc (e.g. `repo/proposed/runner-prompt-patch-handoff.md` for the hand-off README from task #10) for the exact copy-and-patch steps. Once you've applied one, delete its files from `repo/proposed/` so the folder only ever reflects what's still pending.
+Anything under `repo/proposed/` is fully built but not yet wired in, because doing so means writing to `repo/ops/`, `repo/.claude/`, `repo/.github/`, `repo/CLAUDE.md`, `repo/CONTROL.md`, or `repo/RUNNER_PROMPT.md` — paths Night Shift's own agent is permanently denied write access to, in every repo it ever touches, including this one. That's the reason it can never rewrite the instructions that govern it; the catch is that *this* repo's actual product is a set of files that happen to live at exactly those paths, so the same protection blocks the agent from finishing its own product development. A human makes the copy. Cross-platform install, the secret-leak scanner, the original CLI polish (`nightshift model`/`logs`/`uninstall.sh`), and the `CONTROL.md` wiring were applied this way already and now live directly in `repo/ops/`/`repo/.claude/`.
 
-Every staged item that touches `RUNNER_PROMPT.md` or `CLAUDE.md` needs those files hand-patched — no script does this automatically, since editing them is exactly the write this whole system exists to deny even to itself. Review the diff, commit, push, and re-run `ops/install.sh` (or `install.ps1` on Windows) if the item added or changed anything under `ops/`.
+**Currently staged:** the hand-off README (task #10), the Review System (task #4), and per-task Model Tags (task #12). They apply in three ways:
 
-**Honesty about testing:** each staged item's own doc says what was actually run and verified in this (macOS-only) sandbox versus code-reviewed only — check there rather than assuming everything staged has been exercised end-to-end.
+1. **Review System + Model Tags** — one command, via `apply-roadmap.sh`:
+   ```bash
+   cd claude-tasks-hub-repo-clone   # wherever you copied repo/ into
+   bash apply-roadmap.sh            # backs up ops/ + .claude/, copies proposed/runner/* + proposed/agent-settings/ into place, shows a diff
+   ```
+   Then apply the two-line `CLAUDE.md` patch in `repo/proposed/runner-prompt-patch.md` (the `model:*` label row **plus** the label-preservation fix), review the diff, commit, push, and re-run `ops/install.sh` (or `install.ps1` on Windows). `REVIEW_PROMPT.md` needs no patch — it's a brand-new file that already ships live at the repo root, the way `CONTROL.md` did.
+2. **Hand-off README** — copy `repo/proposed/runner/update_handoff.py` to `ops/update_handoff.py`, then hand-apply the three prose edits in `repo/proposed/runner-prompt-patch-handoff.md` to `RUNNER_PROMPT.md` and `CLAUDE.md`. No `install.sh` re-run needed.
+3. **Efficiency pre-check** — `bash apply-efficiency-patch.sh` (staged separately in the companion `claude-tasks` repo / earlier batch), then re-run `ops/install.sh`.
+
+> **Coordination note:** the Review/Model-Tags `proposed/runner/night-shift.sh` does not yet include the efficiency pre-check, so if you apply both, fold `check_queue.py`'s gate back into the final `ops/night-shift.sh` (or apply efficiency last). See `HANDOFF.md`.
+
+Every staged item that touches `RUNNER_PROMPT.md` or `CLAUDE.md` needs those files hand-patched — no script does this automatically, since editing them is exactly the write this whole system exists to deny even to itself.
+
+**Honesty about testing:** each staged item's own doc says what was actually run and verified in this (macOS-only) sandbox versus code-reviewed only. The Review System's pure logic (escalation ladder, candidate selection) was unit-tested and `apply-roadmap.sh` was dry-run against a scratch copy, but the end-to-end review invocation (a real `claude -p` reviewing a real PR) hasn't been exercised — treat the first live review pass as a dry run to watch. The Linux `systemd`/Windows PowerShell scripts were code-reviewed, not field-tested — sanity-check the first scheduled run on either platform.
 
 ---
 
@@ -181,7 +198,7 @@ Every hourly wake-up that passes the budget gates used to invoke a full `claude 
 
 ## Safety, in short
 
-Every layer is designed to fail closed: filesystem writes are OS-sandboxed to the task folder, network access is allowlisted at the socket level, the agent's own tools refuse to edit `CLAUDE.md`, `RUNNER_PROMPT.md`, `CONTROL.md`, `.claude/`, `ops/`, or `.github/` in any repo it ever touches, the fine-grained PAT is the only thing that decides which repos exist for it at all, and any error anywhere in the budget check means *don't run* rather than *run anyway*. Before editing a freshly cloned project repo, `ops/secret_scan.py` (staged — see [Applying the staged roadmap items](#applying-the-staged-roadmap-items)) scans it for accidentally-committed credentials (GitHub/Anthropic/AWS/Slack token shapes, PEM headers, and a generic high-entropy heuristic); a hit stops the agent from touching that repo further and flags you instead, printing only the file and pattern that matched, never the value. The full layer-by-layer breakdown, plus the things that are genuinely still caveats (an undocumented usage endpoint, hostname-level network allowlisting, a shared GitHub identity), is in [DESIGN.md](DESIGN.md#safety-model-layered) — worth reading before you point this at anything you care about.
+Every layer is designed to fail closed: filesystem writes are OS-sandboxed to the task folder, network access is allowlisted at the socket level, the agent's own tools refuse to edit `CLAUDE.md`, `RUNNER_PROMPT.md`, `REVIEW_PROMPT.md` (once the staged Review System wiring is applied), `CONTROL.md`, `.claude/`, `ops/`, or `.github/` in any repo it ever touches, the fine-grained PAT is the only thing that decides which repos exist for it at all, and any error anywhere in the budget check means *don't run* rather than *run anyway*. Before editing a freshly cloned project repo, `ops/secret_scan.py` scans it for accidentally-committed credentials (GitHub/Anthropic/AWS/Slack token shapes, PEM headers, and a generic high-entropy heuristic); a hit stops the agent from touching that repo further and flags you instead, printing only the file and pattern that matched, never the value. The full layer-by-layer breakdown, plus the things that are genuinely still caveats (an undocumented usage endpoint, hostname-level network allowlisting, a shared GitHub identity), is in [DESIGN.md](DESIGN.md#safety-model-layered) — worth reading before you point this at anything you care about.
 
 ## License
 
