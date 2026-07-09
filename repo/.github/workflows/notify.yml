@@ -1,5 +1,9 @@
-# Push notification to your phone (via ntfy.sh) when Night Shift needs input or
-# finishes a task. Fires on exactly two label events -- nothing else, no inbox spam.
+# Push notification to your phone (via ntfy.sh) when Night Shift starts a task,
+# needs input, or finishes one. Fires on exactly three label events -- nothing
+# else, no inbox spam. A resumed task re-labeled status:in-progress after it was
+# already status:in-progress doesn't re-fire "started" -- GitHub only emits
+# `labeled` when a label is newly added, so multi-hour resumes of one task stay
+# silent on this event, by design.
 #
 # One-time setup:
 #   1. Pick a long, private topic name (it acts as a password), e.g.
@@ -15,7 +19,7 @@ on:
 
 jobs:
   push:
-    if: github.event.label.name == 'status:needs-human' || github.event.label.name == 'status:in-review'
+    if: github.event.label.name == 'status:needs-human' || github.event.label.name == 'status:in-review' || github.event.label.name == 'status:in-progress'
     runs-on: ubuntu-latest
     steps:
       - name: Send ntfy push
@@ -25,24 +29,41 @@ jobs:
           TITLE: ${{ github.event.issue.title }}
           URL: ${{ github.event.issue.html_url }}
           NUM: ${{ github.event.issue.number }}
+          LABELS_JSON: ${{ toJson(github.event.issue.labels) }}
         run: |
           if [ -z "$TOPIC" ]; then
             echo "NTFY_TOPIC secret not set; skipping"
             exit 0
           fi
-          if [ "$LABEL" = "status:needs-human" ]; then
-            HEADER="Night Shift needs your input"
-            TAGS="question"
-            PRIO="high"
-          else
-            HEADER="Night Shift finished a task (PR ready)"
-            TAGS="white_check_mark"
-            PRIO="default"
-          fi
+          case "$LABEL" in
+            status:needs-human)
+              HEADER="Night Shift needs your input"
+              TAGS="question"
+              PRIO="high"
+              BODY="#$NUM: $TITLE"
+              ;;
+            status:in-review)
+              HEADER="Night Shift finished a task (PR ready)"
+              TAGS="white_check_mark"
+              PRIO="default"
+              BODY="#$NUM: $TITLE"
+              ;;
+            status:in-progress)
+              # The model:<tag> label (if any) is exactly the model that will run
+              # this task UNLESS CONTROL.md has a live override in effect for this
+              # run -- that override isn't visible from GitHub Actions, so this is
+              # accurate in the common case, not a hard guarantee.
+              MODEL_TAG="$(echo "$LABELS_JSON" | jq -r '[.[] | select(.name | startswith("model:")) | (.name | sub("^model:"; ""))] | first // "account baseline"')"
+              HEADER="Night Shift starting a task"
+              TAGS="rocket"
+              PRIO="low"
+              BODY="#$NUM: $TITLE (model: $MODEL_TAG)"
+              ;;
+          esac
           curl -sS \
             -H "Title: $HEADER" \
             -H "Priority: $PRIO" \
             -H "Tags: $TAGS" \
             -H "Click: $URL" \
-            -d "#$NUM: $TITLE" \
+            -d "$BODY" \
             "https://ntfy.sh/$TOPIC"
