@@ -1,45 +1,140 @@
-# Handoff: Task #7 — More Efficient Night Shift
+# Handoff — pending owner steps (Night-Shift template repo)
 
-## TL;DR
+Several roadmap items have landed staged under `repo/proposed/`. Each needs a
+one-time manual step from you, because the agent is permanently write-denied
+on `ops/`, `.claude/`, `CLAUDE.md`, `RUNNER_PROMPT.md`, and `CONTROL.md` in
+every repo it touches — including this one, whose product *is* the files at
+those paths. That's the same self-protection rule that stops the agent from
+loosening its own budget gates, so every item below is "built, staged, and
+waiting on you to copy into place."
 
-One manual copy step, then done. Everything else is built, tested, and already in this branch.
+Apply these from your hub repo clone (`~/claude-night-shift/tasks-repo`), not
+the template, so the live runner picks them up. Items applied through
+`apply-roadmap.sh` (review system, model tags) can be done in one pass; the
+efficiency and hand-off items have their own steps below.
 
-## What's blocked, and why (same structural wall as before)
+---
 
-`ops/` is permanently write-denied to the Night Shift agent, in every repo it touches — including this one, whose product is a set of files that live at exactly that path. This is by design (it's the same rule that stops the agent from loosening its own budget gates), and it applied here too: the fix for this task is a change to `ops/night-shift.sh` and a new `ops/check_queue.py`, both unreachable by the agent's own tools. Task #1's `HANDOFF.md` (superseded by this one) hit the identical wall and resolved it with a staged `proposed/` + one-time apply script; this run reused that exact pattern rather than re-deriving it.
+## Task #7 — More Efficient Night Shift  (apply-efficiency-patch.sh)
 
-## What this change does
+Adds `ops/check_queue.py`, a stdlib-only pre-check `night-shift.sh` runs
+*before* the `claude -p` invocation. It asks only the coarsest question —
+"does any open issue carry `status:ready`, `status:in-progress`, or
+`status:needs-human` at all?" — via three GitHub REST calls, no LLM. If all
+three are empty, the run logs `queue empty (pre-check); skipping claude
+invocation this run` and exits, saving the invocation that would otherwise
+just conclude `NO_ACTIONABLE_TASKS`. It fails toward "run claude" on any doubt
+(missing token, network error, unexpected response), so normal selection and
+execution are unchanged.
 
-Right now, every hourly wake-up that passes the budget gates invokes a full `claude -p` call — even on the (typical) night when the backlog is fully drained and the only possible outcome is `NO_ACTIONABLE_TASKS`. That invocation still has to load `CLAUDE.md`/`RUNNER_PROMPT.md` and make a few GitHub API calls before it can conclude there's nothing to do. This is the concrete "credits spent checking if there's work to be done" problem described in the task.
+```bash
+bash apply-efficiency-patch.sh          # backs up ops/night-shift.sh, copies proposed/check_queue.py + night-shift.sh into ops/
+git add ops/check_queue.py ops/night-shift.sh
+git commit -m "Skip claude invocation when the task queue is provably empty"
+git push
+bash ops/install.sh                     # re-install the updated script
+```
 
-The fix: `ops/check_queue.py`, a small stdlib-only script `night-shift.sh` now runs *before* the `claude -p` invocation. It asks only the coarsest possible question — "does any open issue carry `status:ready`, `status:in-progress`, or `status:needs-human` at all?" — via three small GitHub REST calls, no LLM involved. If all three come back empty, the run logs `queue empty (pre-check); skipping claude invocation this run` and exits, exactly as if `claude` had run and printed `NO_ACTIONABLE_TASKS` — just without paying for the invocation.
+> **Coordination note:** this item and the review/model-tags items below both
+> ultimately replace `ops/night-shift.sh`. The combined
+> `proposed/runner/night-shift.sh` (review + model tags) does **not** yet
+> include this efficiency pre-check, so applying `apply-roadmap.sh` after
+> `apply-efficiency-patch.sh` would revert the pre-check. Apply the efficiency
+> patch and re-fold the `check_queue.py` gate into the applied
+> `ops/night-shift.sh`, or apply the roadmap first and add the pre-check on
+> top — see the review below before running either.
 
-**It deliberately does not replicate the full selection logic** (`Depends on #N` chains, the 3-hour abandoned-work window, human-reply detection). That asymmetry is the safety property: this script only needs to answer "could there possibly be a candidate," and it fails toward "run claude" on any doubt — missing `GH_TOKEN`/`GITHUB_REPO`, a network error, a rate limit, or an unexpected response shape all fall through to invoking claude exactly as today. A false "not empty" costs one ordinary invocation (today's status quo, never worse); a false "empty" would silently skip real work, which is why the check only ever answers "empty" when it's certain. When there *is* a candidate — even one that later turns out to be blocked by a dependency — the run proceeds unchanged, and the agent's own (unmodified) selection logic decides what happens next.
+---
 
-**Tested:** `check_queue.py`'s logic was unit-tested (all-empty → skip, one-label-nonzero → proceed, network error → proceed, missing env vars → proceed, malformed response → proceed) and live-tested against the real `claude-tasks` repo, which currently has multiple open issues — correctly returned "proceed." The `night-shift.sh` integration diff was verified with `bash -n` and by isolating just the new conditional in a harness (queue-empty path confirmed to skip without invoking a stand-in `claude`); the unmodified rest of the script is byte-for-bit identical to before, confirmed by diff. Note: the script shells out to `curl` rather than using Python's `urllib` for the GitHub REST call — this sandbox's network proxy was observed truncating `urllib`'s read of the `/search/issues` response (`http.client.IncompleteRead`) while `curl` handled the identical request cleanly, consistent with `DESIGN.md`'s existing rationale for preferring `curl` over other HTTP clients here.
+## Task #10 — Shift Hand-off  (manual copy + prompt patch)
 
-## What you need to do
+A `README.md` at the hub repo root that always reflects, in one glance, every
+task currently waiting on you — a PR to review, questions to answer, or a
+`HANDOFF.md` checklist to work through — regardless of which repo the work
+landed in. `update_handoff.py` rewrites one marked block from a JSON comment
+it keeps as source of truth, so no LLM tokens are spent regenerating prose.
 
-1. From wherever you copied `repo/` into (your hub repo clone):
-   ```bash
-   bash apply-efficiency-patch.sh
-   ```
-   This backs up `ops/night-shift.sh` to `ops/night-shift.sh.bak-<timestamp>`, copies `proposed/check_queue.py` and `proposed/night-shift.sh` into `ops/`, and prints a diff to review.
-2. Review the diff, then:
-   ```bash
-   git add ops/check_queue.py ops/night-shift.sh
-   git commit -m "Skip claude invocation when the task queue is provably empty"
-   git push
-   ```
-3. Re-run `bash ops/install.sh` (or `install.ps1` on Windows) so your installed copy at `~/claude-night-shift/` picks up the new script.
-4. Do the same in your `claude-tasks` hub repo clone — its `ops/` is a byte-for-byte copy of this repo's, and this task staged the identical patch there too (see that repo's own `HANDOFF.md`).
+```bash
+cp path/to/Night-Shift/repo/proposed/runner/update_handoff.py ops/update_handoff.py
+chmod +x ops/update_handoff.py
+# then apply the three prose edits in repo/proposed/runner-prompt-patch-handoff.md
+# to RUNNER_PROMPT.md and CLAUDE.md by hand, then commit + push. No install.sh re-run needed.
+```
 
-## What I'll do once it's in place
+Once applied, a future run's next end state starts populating `README.md`
+automatically. The companion `claude-tasks` PR seeds a first version of that
+README, proving the format end-to-end before the automation is wired up.
 
-Nothing further is needed from the agent — this is a one-shot change, not an ongoing integration. A future run can verify it's live by checking `~/claude-night-shift/logs/night-shift.log` for a `queue empty (pre-check)` line on the next fully-idle night.
+---
 
-## Recommendations for further efficiency (not implemented this run — see README's new "Efficiency" section for the full list and why each was deferred)
+## Task #4 — Review System  (apply-roadmap.sh)
 
-- Route the "is there work?" pass through a cheaper model, reserving Sonnet/Opus for confirmed task execution — deliberately deferred since issue #12 ("Shift Model Tags") is already scoped to build per-task model routing; folding a triage-specific model choice in ahead of that would likely conflict with its design.
-- Auto-calibrate `PCT_PER_WORK_HOUR` from `usage-log.csv` (already on DESIGN.md's roadmap list, unrelated to this task's specific ask).
-- Trim `RUNNER_PROMPT.md`/`CLAUDE.md` token footprint further — looked at this; both are already fairly lean and mostly load-bearing (label taxonomy, curl recipes, end-state rules), so no low-risk cuts were identified.
+A toggle (`nightshift review on|off|status`, off by default) that, once the
+normal task queue comes back genuinely empty for a run, gives the
+highest-priority completed-and-unreviewed issue one more pass from a stronger
+model (`sonnet`/default → `opus` → `fable`) before the run ends — turning idle
+end-of-queue credits into a second opinion. Built: the review sub-loop in
+`proposed/runner/night-shift.sh`, the `REVIEW_MODE` knob in
+`proposed/runner/config.env`, the `review` subcommand in
+`proposed/runner/mode.sh`, deny-list entries protecting `REVIEW_PROMPT.md` in
+`proposed/agent-settings/settings.json` + `proposed/runner/runner-settings.json`,
+and `REVIEW_PROMPT.md` itself (already live at the repo root).
+
+```bash
+bash apply-roadmap.sh    # backs up ops/ + .claude/, copies proposed/runner/* + proposed/agent-settings/ into place, shows a diff
+# review the diff, commit, push, then:
+bash ops/install.sh
+nightshift review on     # turn it on when you're ready
+```
+
+`REVIEW_PROMPT.md` needs no manual patch (it's a new file, not an edit to a
+protected one). **Watch the first real review pass closely** — the wrapper
+logic is unit-tested, but the actual `claude -p` review invocation against a
+live issue/PR has not been run end-to-end; treat the first as a dry run.
+
+> `apply-roadmap.sh` also carries the Model Tags batch (task #12) — the two
+> features share the same staged `proposed/runner/*` files, so one
+> `apply-roadmap.sh` run applies both. See the Model Tags section for its
+> one extra `CLAUDE.md` patch (which includes a real label-preservation bug fix).
+
+---
+
+## Task #12 — Shift Model Tags  (apply-roadmap.sh + CLAUDE.md patch)
+
+A task issue can request a specific model with a `model:<tag>` label
+(`model:opus`/`model:sonnet`/`model:haiku`/`model:fable`, already created live
+on the hub repo). The guard resolves the tag *before* launching `claude` (the
+model is a CLI flag, fixed before the process starts), via
+`check_budget.py`'s new `select_next_task()`/`resolve_task_model()` against the
+`MODEL_ALLOWLIST` knob in `config.env`. Precedence: `CONTROL.md`'s `model:`
+override → the task's `model:<tag>` → baseline `MODEL` → account default. A
+missing or unrecognized tag silently falls back to baseline — never a hard
+failure. `nightshift update-models` checks for newly-released models and
+creates their labels for you.
+
+Applied by the **same `apply-roadmap.sh` run** as the Review System above
+(both features share the staged `proposed/runner/*` files, which is why they
+were integrated together on merge). The one extra step is a hand-patch:
+
+```bash
+bash apply-roadmap.sh    # (same run as Task #4 — do it once)
+# then apply proposed/runner-prompt-patch.md to CLAUDE.md + RUNNER_PROMPT.md by hand:
+#   - add a model:* row to CLAUDE.md's Labels table
+#   - FIX: CLAUDE.md's "replace labels" guidance only says to preserve the priority
+#     label, so the first status change on a tagged issue would silently DELETE its
+#     model:* label. The patch corrects it to preserve model:* too. Apply this even
+#     if you drop the rest of the feature.
+#   - one FYI sentence in RUNNER_PROMPT.md (model chosen before the agent starts)
+bash ops/install.sh
+```
+
+**Try it:** put `model:opus` on a `status:ready` issue, `nightshift begin-run`,
+and check `night-shift.log` for the `(model: claude-opus-4-8)` note.
+
+> **Integration note (done for you):** task #4 and task #12 each staged their own
+> full copy of `proposed/runner/{night-shift.sh,config.env,mode.sh}`. On merge
+> these were combined into one coherent set — the review pass and model-tag
+> resolution now share a single `effective_model_for()` helper and a four-tier
+> precedence chain, and `config.env`/`mode.sh` carry both features' knobs and
+> subcommands. So one `apply-roadmap.sh` lands both; you don't need to reconcile
+> them yourself.
