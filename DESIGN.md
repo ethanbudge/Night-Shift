@@ -13,6 +13,14 @@
     │        ├─ reads ~/claude-night-shift/mode  (day-off / vacation override)
     │        └─ reads OAuth token (Keychain) ─► GET api.anthropic.com/api/oauth/usage
     │
+    ├─► check_queue.py                   ── cheap non-LLM pre-check: any open
+    │                                        status:ready/in-progress/needs-human
+    │                                        issue at all? Fails open to "proceed"
+    │                                        on any doubt; skips the claude
+    │                                        invocation entirely only when
+    │                                        provably empty. See "Efficiency"
+    │                                        in the README.
+    │
     ├─► git reset repo clone to origin/main   (clean slate each run)
     │
     └─► LOOP (up to MAX_TASKS_PER_RUN):
@@ -149,5 +157,8 @@ Everything below is now fully implemented — not just specified — but it ship
 
 **Housekeeping identified and fixed in the staged copies:** `night-shift.sh` and `mode.sh` no longer hardcode `/usr/bin/python3` — both now do a `command -v python3` PATH lookup, consistent with `check_budget.py`'s own shebang. `config.env` gained a comment noting `command -v claude` as the general `CLAUDE_BIN` fallback for non-default installs, and documenting `CONTROL.md`'s `model:` precedence over the local `MODEL` knob.
 
+**Queue pre-check (skip the claude invocation on empty nights).** Built: `proposed/check_queue.py` plus the two-line integration in `proposed/night-shift.sh`, applied by `apply-efficiency-patch.sh` (same staged-then-applied shape as the items above, since it edits `ops/night-shift.sh`). Unit-tested against fixtures (all-labels-empty, one-label-nonzero, network error, missing env vars, malformed response) and live-tested against a real hub repo with open issues. See the README's "Efficiency" section for the full writeup, including the deliberate choice to check only the coarsest "is there any candidate at all" question rather than replicate `RUNNER_PROMPT.md`'s full selection logic.
+
 - Auto-calibrate `PCT_PER_WORK_HOUR` from `usage-log.csv` history.
 - A nightly digest: the agent opens/updates a single "📋 Night Shift Report" issue summarizing what it did.
+- Route the initial "is there work?" pass through a cheaper model than task execution uses (see README's "Efficiency" section — deferred pending issue #12's model-routing design).
