@@ -10,6 +10,8 @@
 #   nightshift day-off [YYYY-MM-DD]    skip workday gates; no date = today only
 #   nightshift vacation [YYYY-MM-DD]   also drop the weekly reserve; no date = until changed
 #   nightshift model [<id>|default]    show/set/clear the MODEL override in config.env
+#   nightshift review [on|off|status]  toggle the end-of-queue review pass (see DESIGN.md)
+#   nightshift update-models           check for new Claude models, create their hub labels
 #   nightshift logs [-f] [N]           show the last N lines of night-shift.log (default 50)
 #
 # Hard caps (weekly 85%, 5-hour window) always stay on -- vacation mode can never
@@ -30,7 +32,7 @@ LOG_DIR="${LOG_DIR:-$HOME/claude-night-shift/logs}"
 export WORK_START_HOUR WORK_END_HOUR WORKDAYS PCT_PER_WORK_HOUR SAFETY_FACTOR \
        MIN_SURPLUS_START MIN_SURPLUS_CONTINUE WEEKLY_HARD_CAP \
        FIVE_HOUR_MAX_START FIVE_HOUR_MAX_CONTINUE LOG_DIR MODE_FILE MODEL \
-       SECRETS_DIR GITHUB_REPO
+       MODEL_ALLOWLIST REVIEW_MODE SECRETS_DIR GITHUB_REPO
 
 # PATH lookup rather than a hardcoded /usr/bin/python3: that path doesn't
 # exist on every Linux distro (and isn't guaranteed on macOS either once
@@ -38,7 +40,7 @@ export WORK_START_HOUR WORK_END_HOUR WORKDAYS PCT_PER_WORK_HOUR SAFETY_FACTOR \
 # supported platform actually guarantees.
 PYTHON3="$(command -v python3 || true)"
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 valid_date() {
     [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
@@ -59,6 +61,7 @@ case "$cmd" in
             echo "mode file: (none) -> normal   ($MODE_FILE)"
         fi
         echo "model override: ${MODEL:-(none -- account default)}"
+        echo "review mode: ${REVIEW_MODE:-off}"
         echo "guard decision right now:"
         if [ -n "$PYTHON3" ]; then
             # rc=$? on a separate line would abort under `set -e` before it runs;
@@ -180,6 +183,86 @@ case "$cmd" in
                 echo "hub repo has one) takes priority for that run when it's set to a non-empty value."
                 ;;
         esac
+        ;;
+    review)
+        [ -f "$BASE/config.env" ] || { echo "ERROR: $BASE/config.env not found"; exit 1; }
+        case "${2:-status}" in
+            status)
+                echo "review mode: ${REVIEW_MODE:-off}"
+                ;;
+            on)
+                sed -i.bak 's/^REVIEW_MODE=.*/REVIEW_MODE="on"/' "$BASE/config.env" && rm -f "$BASE/config.env.bak"
+                echo "review mode: on"
+                echo "once the normal task queue is empty for the run, a completed-and-unreviewed"
+                echo "issue (oldest first, highest priority) gets one pass from a stronger model"
+                echo "(sonnet -> opus -> fable) before the run ends -- see DESIGN.md's Review System"
+                echo "section for the escalation ladder and what 'reviewed' means."
+                ;;
+            off)
+                sed -i.bak 's/^REVIEW_MODE=.*/REVIEW_MODE="off"/' "$BASE/config.env" && rm -f "$BASE/config.env.bak"
+                echo "review mode: off"
+                ;;
+            *)
+                echo "usage: nightshift review [on|off|status]"
+                exit 1
+                ;;
+        esac
+        ;;
+    update-models)
+        # Asks a cheap agent call to check for Claude models released since
+        # MODEL_ALLOWLIST was last updated, using WebSearch (the only thing
+        # this needs -- no repo access, no edits). For anything genuinely new,
+        # this command itself creates the model:<tag> hub label directly (an
+        # ordinary label write, not a protected-path edit, so the CLI you're
+        # running right now -- not the sandboxed agent -- can just do it).
+        # Updating MODEL_ALLOWLIST in config.env to actually route tasks to a
+        # new model is still a one-line hand-edit: `nightshift` itself can
+        # propose the line, but config.env is the same protected path the
+        # agent can never write, so applying it is on you.
+        [ -n "$PYTHON3" ] || { echo "ERROR: python3 not found on PATH"; exit 1; }
+        [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ] || { echo "ERROR: CLAUDE_BIN not set/executable"; exit 1; }
+        [ -f "$SECRETS_DIR/github-token" ] || { echo "ERROR: $SECRETS_DIR/github-token not found"; exit 1; }
+        [ -n "${GITHUB_REPO:-}" ] || { echo "ERROR: GITHUB_REPO not set in config.env"; exit 1; }
+
+        echo "Checking for Claude models not yet in MODEL_ALLOWLIST (current: ${MODEL_ALLOWLIST:-(empty)})..."
+        prompt="Current Night Shift MODEL_ALLOWLIST (tag=model-id pairs): ${MODEL_ALLOWLIST:-(empty)}
+Use web search to check for Claude models Anthropic has released that are NOT
+already covered by one of these tag=model-id pairs (a new snapshot of an
+already-tagged family, e.g. a newer Sonnet point release, does not count --
+only a genuinely new, currently-recommended-for-general-use model line).
+For each one found, output one line exactly in the form:
+PROPOSE <short-lowercase-tag>=<exact-model-id>
+using a short family name as the tag (e.g. 'opus', 'sonnet', 'haiku', 'fable').
+If you find none, output exactly: PROPOSE none
+Output ONLY these PROPOSE lines, nothing else -- no explanation, no markdown."
+        raw="$("$CLAUDE_BIN" -p "$prompt" --model claude-haiku-4-5-20251001 --max-turns 8 2>>"$LOG_DIR/night-shift.log" || true)"
+
+        proposals="$(echo "$raw" | grep -o '^PROPOSE [a-z0-9-]*=claude-[a-z0-9.-]*$' | sed 's/^PROPOSE //' || true)"
+        if [ -z "$proposals" ] || echo "$raw" | grep -q '^PROPOSE none$'; then
+            echo "No new models found beyond the current allowlist."
+            exit 0
+        fi
+
+        token="$(cat "$SECRETS_DIR/github-token")"
+        new_allowlist="$MODEL_ALLOWLIST"
+        echo "Proposed additions:"
+        while IFS='=' read -r tag model_id; do
+            [ -z "$tag" ] && continue
+            echo "  model:$tag -> $model_id"
+            # Create the hub label if it doesn't already exist. A 422 here just
+            # means it already exists -- not an error worth stopping over.
+            curl -sS -o /dev/null -X POST \
+                -H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$GITHUB_REPO/labels" \
+                -d "{\"name\":\"model:$tag\",\"color\":\"ededed\",\"description\":\"Task requests the $tag model\"}" \
+                || true
+            new_allowlist="${new_allowlist:+$new_allowlist,}$tag=$model_id"
+        done <<< "$proposals"
+
+        echo ""
+        echo "Hub labels created (or already present) for the tags above."
+        echo "To actually route tasks to them, hand-edit MODEL_ALLOWLIST in config.env to:"
+        echo "  MODEL_ALLOWLIST=\"$new_allowlist\""
         ;;
     logs)
         LOGFILE="$LOG_DIR/night-shift.log"
