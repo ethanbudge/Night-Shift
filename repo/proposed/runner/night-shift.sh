@@ -261,7 +261,10 @@ else:
 
 ## This run's candidates
 Completed-and-unreviewed issue numbers (this hub repo), oldest completion first: $candidates
-Pick the single highest-priority one (check each candidate's priority label; oldest issue number first within a tier) to review this invocation."
+Pick the single highest-priority one (check each candidate's priority label; oldest issue number first within a tier) to review this invocation.
+
+## Model escalation for this pass
+Escalating from ${base_label} to ${review_model}. Use these exact two values in the announcement comment described above."
 
         perl -e 'alarm shift; exec @ARGV' "$((TASK_TIMEOUT_MIN * 60))" \
             "$CLAUDE_BIN" -p "$review_prompt" \
