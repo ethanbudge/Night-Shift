@@ -8,7 +8,7 @@ Environment facts:
 ## Select one task (in this priority order)
 
 1. **Unblock answered questions:** an open issue labeled `status:needs-human` whose most recent comment does NOT begin with `🤖 Night Shift` — the human has replied. Highest-priority such issue first.
-2. **Resume abandoned work:** an open issue labeled `status:in-progress` with no activity in the last 3 hours (a previous run crashed or timed out). Check out its `task/<n>-*` branch and continue from the WIP.
+2. **Resume in-progress work:** an open issue labeled `status:in-progress` with no activity in the last **30 minutes** (a previous run crashed, timed out, or stopped a budget-bounded batch of a long multi-run task). Check out its `task/<n>-*` branch and continue from the WIP. *(This window was 3 hours; it is deliberately short because the runner holds a single-instance lock — two runs never work the same task at once — so the guard only needs to be long enough not to fight an invocation still in flight. A short window lets a long, intentionally-multi-run sweep advance on nearly every wake instead of stalling for hours, while the gap between wakes still leaves room for `status:ready` work to interleave.)*
 3. **Start fresh:** the open `status:ready` issue with the highest priority label (`priority:high` > `medium` > `low`), oldest first within a tier.
 
 An issue whose body or thread says `Depends on #N` while issue N is still open is NOT actionable — skip it and consider the next candidate.
