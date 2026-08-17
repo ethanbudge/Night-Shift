@@ -79,6 +79,48 @@ print(d.get("model_override") or d.get("task_model_id") or "")
 ' "$1" 2>/dev/null
 }
 
+# --- OAuth-stall watchdog ----------------------------------------------------
+# A blank/expired Claude credential makes check_budget fail every wake (rc 2 =
+# no token, rc 3 = token rejected) and the runner then silently does nothing,
+# for days, until someone notices. Count consecutive auth-failure wakes and,
+# once past a threshold, fire ONE ntfy push (the same channel notify.yml uses)
+# so the owner knows to run `claude auth login`. rc 1 (ordinary schedule/budget
+# no-go) says nothing about auth, so it leaves the counter untouched; a GO
+# (rc 0) proves auth is healthy and clears the state. Needs the ntfy topic in
+# $SECRETS_DIR/ntfy-topic (the same value as the NTFY_TOPIC GitHub secret).
+oauth_watchdog() {
+    local rc="$1"
+    local cnt_f="$BASE/.oauth_fail_count" flag_f="$BASE/.oauth_alerted"
+    if [ "$rc" -eq 0 ]; then
+        [ -f "$flag_f" ] && log "oauth watchdog: auth recovered; clearing stall state"
+        rm -f "$cnt_f" "$flag_f"
+        return
+    fi
+    [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ] || return   # rc 1: auth unknown, leave counter as-is
+    local n=1
+    [ -f "$cnt_f" ] && n=$(( $(cat "$cnt_f" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "$cnt_f"
+    local threshold="${OAUTH_ALERT_AFTER:-3}"
+    log "oauth watchdog: consecutive auth-failure wake $n (alert at $threshold, rc=$rc)"
+    [ "$n" -ge "$threshold" ] && [ ! -f "$flag_f" ] || return
+    local topic=""
+    [ -f "$SECRETS_DIR/ntfy-topic" ] && topic="$(cat "$SECRETS_DIR/ntfy-topic" 2>/dev/null)"
+    if [ -z "$topic" ]; then
+        log "oauth watchdog: STALLED ($n wakes) but no $SECRETS_DIR/ntfy-topic present -- create it (your NTFY_TOPIC value) to enable phone alerts; fix the stall with 'claude auth login'"
+        return
+    fi
+    if curl -sS --max-time 15 \
+        -H "Title: Night Shift stalled - sign in again" \
+        -H "Priority: high" -H "Tags: warning,lock" \
+        -d "Claude auth is down ($n wakes, rc=$rc); no tasks are running. Fix: run 'claude auth login' on the runner machine, then 'claude auth status'." \
+        "https://ntfy.sh/$topic" >>"$LOG" 2>&1; then
+        touch "$flag_f"
+        log "oauth watchdog: sent ntfy stall alert after $n consecutive auth failures"
+    else
+        log "oauth watchdog: ntfy push failed; will retry next wake"
+    fi
+}
+
 # --- Gate check (with one token-refresh retry on exit code 3) ---------------
 decision="$(budget start)"; rc=$?
 if [ "$rc" -eq 3 ]; then
@@ -89,8 +131,10 @@ if [ "$rc" -eq 3 ]; then
 fi
 if [ "$rc" -ne 0 ]; then
     log "no-go (rc=$rc): $decision"
+    oauth_watchdog "$rc"
     exit 0
 fi
+oauth_watchdog 0
 log "GO: $decision"
 
 # --- Load the token now: both the queue pre-check below and the repo clone
