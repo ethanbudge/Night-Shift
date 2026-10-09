@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """Night Shift budget guard. Decides whether the agent may run right now.
 
-Exit codes:
+Exit codes (--mode start|continue):
   0  go
   1  stop (a gate said no -- normal, not an error)
   2  stop (error of any kind -- FAIL CLOSED)
   3  stop (OAuth token rejected; caller may refresh via a claude call and retry once)
 
-Prints a single-line JSON decision to stdout and appends a row to usage-log.csv.
-Configuration comes from environment variables (sourced from config.env by the
-wrapper); every knob has a safe default. Stdlib only; runs on macOS, Linux, and
-Windows system python3.
+--mode peek is a separate, advisory-only entry point for an in-flight task to
+self-check live usage between batches (see do_peek()). It always exits 0 and
+does not touch the schedule gates or usage-log.csv; the caller (the agent
+itself, via a Bash call) decides what to do with the JSON it prints.
+
+--mode snapshot is run by the wrapper (outside the agent's sandbox, where the
+OAuth token is reachable) every few minutes while an invocation is in flight.
+It writes the two live percentages -- never the token -- to a small JSON file
+that `peek` falls back to when it can't reach a token itself, which is always
+the case inside the macOS sandbox (Keychain access is blocked by design).
+
+Prints a single-line JSON decision to stdout and appends a row to usage-log.csv
+(start/continue only). Configuration comes from environment variables (sourced
+from config.env by the wrapper); every knob has a safe default. Stdlib only;
+runs on macOS, Linux, and Windows system python3.
 """
 
 import csv
@@ -66,6 +77,25 @@ CFG = {
     "weekly_hard_cap": fnum("WEEKLY_HARD_CAP", 85),
     "five_hour_max_start": fnum("FIVE_HOUR_MAX_START", 90),
     "five_hour_max_continue": fnum("FIVE_HOUR_MAX_CONTINUE", 95),
+    # `--mode peek` thresholds: an in-flight task's own self-check between
+    # batches, well below the start/continue gates above -- the point is to
+    # have the agent wrap up and commit on its own initiative with a wide
+    # margin still in hand, rather than finding out it's over budget only
+    # when the platform's rate limiter cuts it off mid-turn with nothing
+    # checkpointed. See do_peek().
+    "peek_five_hour_warn": fnum("PEEK_FIVE_HOUR_WARN", 75),
+    "peek_weekly_warn": fnum("PEEK_WEEKLY_WARN", 78),
+    # Written by `--mode snapshot` (wrapper, unsandboxed), read by `--mode
+    # peek` (agent, sandboxed) when it has no token of its own. The default
+    # is chosen for the macOS sandbox: it can't read anything under ~ outside
+    # the working tree (not even ~/claude-night-shift), but can read /tmp --
+    # and can't write there, so the agent can't forge its own reading. Kept
+    # out of the hub clone for the same reason.
+    "usage_snapshot_file": os.path.expanduser(os.environ.get(
+        "USAGE_SNAPSHOT_FILE", "/tmp/night-shift/usage-snapshot.json")),
+    # A snapshot older than this is treated as no reading at all (fail
+    # closed). A few refresh intervals' worth, so one failed refresh is fine.
+    "usage_snapshot_max_age": fnum("USAGE_SNAPSHOT_MAX_AGE_SEC", 900),
     "log_dir": os.environ.get("LOG_DIR", os.path.expanduser("~/claude-night-shift/logs")),
     "mode_file": os.path.expanduser(os.environ.get("MODE_FILE", "~/claude-night-shift/mode")),
     "github_repo": os.environ.get("GITHUB_REPO", ""),
@@ -416,6 +446,132 @@ def parse_reset(s):
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone()
 
 
+def read_usage_pcts(usage):
+    """Shared by the schedule gate and `--mode peek`: the two percentages
+    everything else is computed from. Returns (five_pct, weekly_pct,
+    weekly_reset_str) or None if the response doesn't have what we need --
+    callers treat None the same as a fetch error (fail closed)."""
+    five = usage.get("five_hour") or {}
+    five_pct = float(five.get("utilization", 0))
+    weekly_pct, weekly_reset = -1.0, None
+    for key in ("seven_day", "seven_day_sonnet", "seven_day_opus", "seven_day_oauth_apps"):
+        b = usage.get(key)
+        if isinstance(b, dict) and b.get("utilization") is not None:
+            u = float(b["utilization"])
+            if u > weekly_pct:
+                weekly_pct = u
+                weekly_reset = b.get("resets_at")
+    if weekly_pct < 0 or not weekly_reset:
+        return None
+    return five_pct, weekly_pct, weekly_reset
+
+
+def live_usage_pcts():
+    """Token -> usage endpoint -> (five_pct, weekly_pct), or (None, reason)."""
+    token = get_token()
+    if not token:
+        return None, "no OAuth token found"
+    usage, err = fetch_usage(token)
+    if err or not isinstance(usage, dict):
+        return None, err or "unparseable usage response"
+    parsed = read_usage_pcts(usage)
+    if parsed is None:
+        return None, "usage response missing weekly utilization"
+    return (parsed[0], parsed[1]), None
+
+
+def do_snapshot():
+    """Wrapper-side: write the live percentages for a sandboxed `peek` to
+    read. Atomic (tmp + rename) so a concurrent peek never sees a torn file.
+    A failed reading is written too (ok: false), so peek stops rather than
+    trusting an older good snapshot that no longer reflects reality."""
+    pcts, why = live_usage_pcts()
+    snap = {"written_at": dt.datetime.now().astimezone().timestamp(), "ok": pcts is not None}
+    if pcts is not None:
+        snap["five_hour_pct"], snap["weekly_pct"] = pcts
+    else:
+        snap["reason"] = why
+    path = CFG["usage_snapshot_file"]
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(snap, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(json.dumps({"ok": False, "reason": f"could not write snapshot: {e}"}))
+        return 2
+    print(json.dumps(snap))
+    return 0 if snap["ok"] else 2
+
+
+def read_usage_snapshot():
+    """Agent-side fallback: (five_pct, weekly_pct, age_sec), or (None, reason)."""
+    try:
+        with open(CFG["usage_snapshot_file"]) as f:
+            snap = json.load(f)
+        age = dt.datetime.now().astimezone().timestamp() - float(snap["written_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, "no OAuth token found and no usage snapshot available"
+    if age > CFG["usage_snapshot_max_age"]:
+        return None, f"usage snapshot is stale ({int(age)}s old)"
+    if not snap.get("ok"):
+        return None, f"latest usage snapshot failed: {snap.get('reason', 'unknown')}"
+    try:
+        return (float(snap["five_hour_pct"]), float(snap["weekly_pct"]), int(age)), None
+    except (KeyError, TypeError, ValueError):
+        return None, "unparseable usage snapshot"
+
+
+def do_peek():
+    """Read-only mid-task usage check, independent of the start/continue
+    schedule gates (no working-hours/reserve/GitHub calls -- just the two
+    live percentages). For a long, multi-batch task to self-throttle with
+    between batches, instead of finding out it's over budget only when the
+    platform's own rate limiter cuts it off mid-turn. Cheap enough (one HTTPS
+    GET or one file read, no model tokens) to call after every batch.
+
+    Reading source: a live token if this process can reach one, otherwise
+    the wrapper's usage snapshot (see do_snapshot) -- inside the macOS
+    sandbox the Keychain is unreachable, so the snapshot is the normal path.
+
+    Always exits 0 -- this is advisory, not a gate -- and prints one line of
+    JSON. The caller only needs `should_stop`:
+      {"ok": true, "five_hour_pct": .., "weekly_pct": .., "should_stop": bool,
+       "reason": "..", "source": "live"|"snapshot"}
+    Any failure to get a real reading (no token and no fresh snapshot,
+    network, bad response) also comes back as `should_stop: true` -- the same
+    fail-closed posture as the rest of this script: an in-flight task that
+    can't confirm it has headroom should assume it doesn't, rather than press
+    on blind."""
+    extra = {}
+    pcts, why = live_usage_pcts()
+    if pcts is not None:
+        extra["source"] = "live"
+    elif why == "no OAuth token found":
+        snap, why = read_usage_snapshot()
+        if snap is not None:
+            pcts = snap[:2]
+            extra = {"source": "snapshot", "snapshot_age_sec": snap[2]}
+    if pcts is None:
+        result = {"ok": False, "should_stop": True, "reason": why}
+    else:
+        five_pct, weekly_pct = pcts
+        five_warn = CFG["peek_five_hour_warn"]
+        weekly_warn = CFG["peek_weekly_warn"]
+        if five_pct >= five_warn:
+            reason = f"5-hour window at {five_pct}% >= {five_warn}% self-check threshold"
+        elif weekly_pct >= weekly_warn:
+            reason = f"weekly utilization {weekly_pct}% >= {weekly_warn}% self-check threshold"
+        else:
+            reason = "within self-check thresholds"
+        result = {"ok": True, "five_hour_pct": five_pct, "weekly_pct": weekly_pct,
+                  "should_stop": five_pct >= five_warn or weekly_pct >= weekly_warn,
+                  "reason": reason, **extra}
+    print(json.dumps(result))
+    return 0
+
+
 def in_work_hours(t):
     return t.weekday() in CFG["workdays"] and CFG["work_start"] <= t.hour < CFG["work_end"]
 
@@ -443,8 +599,13 @@ def main():
     mode = "start"
     if "--mode" in sys.argv:
         mode = sys.argv[sys.argv.index("--mode") + 1]
-    if mode not in ("start", "continue"):
+    if mode not in ("start", "continue", "peek", "snapshot"):
         return fail(mode, 2, f"unknown mode {mode!r}")
+
+    if mode == "peek":
+        return do_peek()
+    if mode == "snapshot":
+        return do_snapshot()
 
     now = dt.datetime.now().astimezone()
     local_override, local_note = read_override(now)
@@ -477,20 +638,10 @@ def main():
     if err or not isinstance(usage, dict):
         return fail(mode, 2, "usage endpoint unreachable or unparseable")
 
-    five = usage.get("five_hour") or {}
-    five_pct = float(five.get("utilization", 0))
-
-    # Weekly: take the most-constrained of whatever weekly buckets the API reports.
-    weekly_pct, weekly_reset = -1.0, None
-    for key in ("seven_day", "seven_day_sonnet", "seven_day_opus", "seven_day_oauth_apps"):
-        b = usage.get(key)
-        if isinstance(b, dict) and b.get("utilization") is not None:
-            u = float(b["utilization"])
-            if u > weekly_pct:
-                weekly_pct = u
-                weekly_reset = b.get("resets_at")
-    if weekly_pct < 0 or not weekly_reset:
+    parsed = read_usage_pcts(usage)
+    if parsed is None:
         return fail(mode, 2, "usage response missing weekly utilization/resets_at")
+    five_pct, weekly_pct, weekly_reset = parsed
     try:
         reset_at = parse_reset(weekly_reset)
     except ValueError:

@@ -14,7 +14,8 @@ source "$BASE/config.env"
 export WORK_START_HOUR WORK_END_HOUR WORKDAYS PCT_PER_WORK_HOUR SAFETY_FACTOR \
        MIN_SURPLUS_START MIN_SURPLUS_CONTINUE WEEKLY_HARD_CAP \
        FIVE_HOUR_MAX_START FIVE_HOUR_MAX_CONTINUE LOG_DIR MODE_FILE MODEL \
-       MODEL_ALLOWLIST SECRETS_DIR GITHUB_REPO
+       MODEL_ALLOWLIST SECRETS_DIR GITHUB_REPO USAGE_SNAPSHOT_FILE \
+       USAGE_SNAPSHOT_MAX_AGE_SEC PEEK_FIVE_HOUR_WARN PEEK_WEEKLY_WARN
 
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/night-shift.log"
@@ -40,7 +41,41 @@ if ! mkdir "$LOCKDIR" 2>/dev/null; then
     mkdir "$LOCKDIR" 2>/dev/null || exit 0
 fi
 echo $$ > "$LOCKDIR/pid"
-trap 'rm -rf "$LOCKDIR"' EXIT
+trap '[ -n "${SNAP_PID:-}" ] && stop_usage_snapshots; rm -rf "$LOCKDIR"' EXIT
+
+# --- Owner pause (self-expiring) ---------------------------------------------
+# `$BASE/paused-until` holding a local timestamp (e.g. 2026-10-15T20:00) skips
+# every wake until then, then deletes itself so the runner resumes on its own
+# -- for "I need all my usage this week" without unloading the timer and
+# having to remember to load it again. Unparseable contents fail closed
+# (stay paused) and say so in the log.
+PAUSE_FILE="$BASE/paused-until"
+if [ -f "$PAUSE_FILE" ]; then
+    pause_state="$("$PYTHON3" -c '
+import datetime as dt, sys
+try:
+    until = dt.datetime.fromisoformat(open(sys.argv[1]).read().strip())
+except (OSError, ValueError):
+    print("bad"); sys.exit()
+if until.tzinfo is None:
+    until = until.astimezone()
+print("paused" if dt.datetime.now().astimezone() < until else "expired")
+' "$PAUSE_FILE")"
+    case "$pause_state" in
+        expired)
+            log "pause expired ($(cat "$PAUSE_FILE")); resuming normal runs"
+            rm -f "$PAUSE_FILE"
+            ;;
+        paused)
+            log "paused until $(cat "$PAUSE_FILE") (delete $PAUSE_FILE to resume early)"
+            exit 0
+            ;;
+        *)
+            log "unparseable $PAUSE_FILE; staying paused (fix or delete it)"
+            exit 0
+            ;;
+    esac
+fi
 
 # Keep the machine awake for the duration of this process only. macOS has
 # caffeinate; Linux's equivalent is systemd-inhibit (a no-op with a log line
@@ -60,6 +95,33 @@ case "$(uname -s)" in
 esac
 
 budget() { "$PYTHON3" "$BASE/check_budget.py" --mode "$1" 2>>"$LOG"; }
+
+# --- Usage snapshots for the agent's mid-run self-check ----------------------
+# The agent's `check_budget.py --mode peek` runs inside the OS sandbox, which
+# (by design) can't read the Keychain, so it can never fetch live usage on its
+# own. While an invocation is in flight, refresh a token-free usage snapshot
+# from out here every USAGE_SNAPSHOT_EVERY_SEC; peek reads that instead. The
+# old file is deleted first so a previous run's reading can never be mistaken
+# for a current one.
+SNAP_PID=""
+start_usage_snapshots() {
+    rm -f "${USAGE_SNAPSHOT_FILE:-/tmp/night-shift/usage-snapshot.json}"
+    (
+        while :; do
+            "$PYTHON3" "$BASE/check_budget.py" --mode snapshot >/dev/null 2>>"$LOG" \
+                || echo "$(date '+%Y-%m-%d %H:%M:%S') usage snapshot refresh failed" >> "$LOG"
+            sleep "${USAGE_SNAPSHOT_EVERY_SEC:-300}"
+        done
+    ) &
+    SNAP_PID=$!
+}
+stop_usage_snapshots() {
+    [ -n "${SNAP_PID:-}" ] || return 0
+    pkill -P "$SNAP_PID" 2>/dev/null
+    kill "$SNAP_PID" 2>/dev/null
+    wait "$SNAP_PID" 2>/dev/null
+    SNAP_PID=""
+}
 
 # Resolve the model a decision JSON blob implies right now: CONTROL.md's
 # model line (riding along as model_override) beats the picked task's
@@ -161,6 +223,7 @@ while [ "$tasks" -lt "$MAX_TASKS_PER_RUN" ]; do
     # ${model_args[@]+"${model_args[@]}"} not "${model_args[@]}": macOS ships
     # bash 3.2, which treats an empty array as unset under `set -u` and
     # aborts the whole run before claude is ever invoked.
+    start_usage_snapshots
     perl -e 'alarm shift; exec @ARGV' "$((TASK_TIMEOUT_MIN * 60))" \
         "$CLAUDE_BIN" -p "$(cat "$REPO_DIR/RUNNER_PROMPT.md")" \
         --settings "$BASE/runner-settings.json" \
@@ -170,6 +233,7 @@ while [ "$tasks" -lt "$MAX_TASKS_PER_RUN" ]; do
         "${model_args[@]+"${model_args[@]}"}" \
         > "$RUN_LOG" 2>>"$LOG"
     rc=$?
+    stop_usage_snapshots
     tasks=$((tasks + 1))
 
     if grep -q "NO_ACTIONABLE_TASKS" "$RUN_LOG" 2>/dev/null; then
@@ -282,6 +346,7 @@ Pick the single highest-priority one (check each candidate's priority label; old
 ## Model escalation for this pass
 Escalating from ${base_label} to ${review_model}. Use these exact two values in the announcement comment described above."
 
+        start_usage_snapshots
         perl -e 'alarm shift; exec @ARGV' "$((TASK_TIMEOUT_MIN * 60))" \
             "$CLAUDE_BIN" -p "$review_prompt" \
             --settings "$BASE/runner-settings.json" \
@@ -291,6 +356,7 @@ Escalating from ${base_label} to ${review_model}. Use these exact two values in 
             --model "$review_model" \
             > "$RUN_LOG" 2>>"$LOG"
         rc=$?
+        stop_usage_snapshots
         tasks=$((tasks + 1))
 
         if [ "$rc" -eq 142 ]; then
